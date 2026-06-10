@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 420">
+  <!-- SpatialHAC.jl — Bartlett kernel decay around a focal point,
+       neighbouring observations in Julia colors -->
+  <defs>
+    <radialGradient id="kern" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"  stop-color="#9558B2" stop-opacity="0.50"/>
+      <stop offset="55%" stop-color="#9558B2" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#9558B2" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- kernel field (distance decay) -->
+  <circle cx="210" cy="210" r="190" fill="url(#kern)"/>
+
+  <!-- Bartlett rings: weight fades with distance -->
+  <circle cx="210" cy="210" r="70"  fill="none" stroke="#9558B2" stroke-width="7"  stroke-opacity="0.85"/>
+  <circle cx="210" cy="210" r="120" fill="none" stroke="#9558B2" stroke-width="5"  stroke-opacity="0.45"/>
+  <circle cx="210" cy="210" r="170" fill="none" stroke="#9558B2" stroke-width="3.5" stroke-opacity="0.20"/>
+
+  <!-- links to in-range neighbours (same period), fading with distance -->
+  <line x1="210" y1="210" x2="305" y2="135" stroke="#4063D8" stroke-width="6" stroke-opacity="0.65" stroke-linecap="round"/>
+  <line x1="210" y1="210" x2="120" y2="150" stroke="#389826" stroke-width="6" stroke-opacity="0.60" stroke-linecap="round"/>
+  <line x1="210" y1="210" x2="150" y2="320" stroke="#CB3C33" stroke-width="5" stroke-opacity="0.45" stroke-linecap="round"/>
+  <line x1="210" y1="210" x2="330" y2="290" stroke="#4063D8" stroke-width="4" stroke-opacity="0.30" stroke-linecap="round"/>
+
+  <!-- focal observation -->
+  <circle cx="210" cy="210" r="30" fill="#9558B2"/>
+  <circle cx="210" cy="210" r="30" fill="none" stroke="#ffffff" stroke-width="5" stroke-opacity="0.9"/>
+
+  <!-- neighbours: size/opacity = kernel weight -->
+  <circle cx="305" cy="135" r="22" fill="#4063D8"/>
+  <circle cx="120" cy="150" r="20" fill="#389826"/>
+  <circle cx="150" cy="320" r="17" fill="#CB3C33" fill-opacity="0.85"/>
+  <circle cx="330" cy="290" r="13" fill="#4063D8" fill-opacity="0.6"/>
+
+  <!-- out-of-range observations (beyond cutoff): weight zero, greyed -->
+  <circle cx="55"  cy="60"  r="11" fill="#888888" fill-opacity="0.35"/>
+  <circle cx="370" cy="55"  r="10" fill="#888888" fill-opacity="0.30"/>
+  <circle cx="60"  cy="370" r="10" fill="#888888" fill-opacity="0.30"/>
+  <circle cx="375" cy="378" r="9"  fill="#888888" fill-opacity="0.25"/>
+</svg>
