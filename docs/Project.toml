@@ -1,0 +1,6 @@
+[deps]
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+SpatialHAC = "722b8b5f-3014-4c20-8332-0043c26f693c"
+
+[compat]
+Documenter = "1"

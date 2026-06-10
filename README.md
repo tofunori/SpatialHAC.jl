@@ -1,5 +1,9 @@
 # SpatialHAC.jl
 
+[![CI](https://github.com/tofunori/SpatialHAC.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/tofunori/SpatialHAC.jl/actions/workflows/CI.yml)
+[![Docs](https://img.shields.io/badge/docs-dev-blue.svg)](https://tofunori.github.io/SpatialHAC.jl/dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **Spatial HAC (Conley) standard errors for linear mixed models at scale.**
 
 Computes spatially robust (Conley, 1999) standard errors **directly on the
