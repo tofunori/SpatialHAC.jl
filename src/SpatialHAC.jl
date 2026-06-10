@@ -114,6 +114,13 @@ function vcov_conley(m, lat::AbstractVector, lon::AbstractVector,
     isempty(cutoffs) && throw(ArgumentError("no cutoffs given"))
     any(c -> c <= 0, cutoffs) && throw(ArgumentError("cutoffs must be > 0 km"))
 
+    # weighted fits change the estimating equations; refuse with a clear error
+    # rather than letting the vcov(m) self-check fail confusingly downstream
+    if !isempty(m.sqrtwts)
+        throw(ArgumentError("vcov_conley supports unweighted models only " *
+                            "(this model was fitted with case weights)"))
+    end
+
     ehat = response(m) .- X * coef(m)            # marginal residuals
     W = scaled_re_matrix(m)
     q = size(W, 2)
