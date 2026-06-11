@@ -46,7 +46,8 @@ R / heavy geostatistics dependencies) re-run manually before each release.
 | Covariogram / variogram | Independent brute-force binning | ~1e-12 | `runtests.jl` |
 | Semivariogram identity | `γ = m₂ − Ĉ` per bin (exact algebra) | ~1e-12 | `runtests.jl` |
 | Variogram cross-package | `GeoStatsFunctions.EmpiricalVariogram` | 6e-16 | `test/crosscheck_variogram_geostats.jl` |
-| Software quality | `Aqua.test_all` (11 checks) + `JET.test_package` | pass | `runtests.jl` |
+| Software quality | `Aqua.test_all` (11 checks) | pass | `runtests.jl` |
+| Static type analysis | `JET.test_package` (local gate; JET is too Julia-version-coupled for CI) | 0 possible errors | `test/jet.jl` |
 
 ## The runtime self-check
 
