@@ -11,6 +11,7 @@ makedocs(;
     pages = [
         "Home" => "index.md",
         "The estimator" => "estimator.md",
+        "Validation" => "validation.md",
         "API" => "api.md",
     ],
     checkdocs = :exports,

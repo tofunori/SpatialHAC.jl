@@ -151,6 +151,12 @@ e.g. after an internal MixedModels change).
 1. **Lower bound:** cutoff truncation ignores residual correlation beyond the
    cutoff (large-group random effects, synoptic fields) and across periods.
    Report a cutoff-sensitivity curve; cite alongside cluster-robust SEs.
+   Cross-period (space×time) HAC is deliberately **not** provided: we could not
+   anchor such an estimator against an independent external reference
+   (Driscoll-Kraay implementations target `plm`-style panel models, not the
+   mixed-model GLS estimand), and we do not ship estimators we cannot validate
+   two independent ways. Use `vcov_cluster` at a coarse level (e.g. by group)
+   to probe cross-period dependence instead.
 2. The candidate grid is not antimeridian-aware (pairs straddling ±180°
    longitude are missed).
 3. `Ω̂` treated as known (standard GEE practice). Case-weighted fits are

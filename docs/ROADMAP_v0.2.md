@@ -186,7 +186,17 @@ Haversine suppose lat/lon en degrés. Utilisateurs avec coords projetées (UTM/A
 
 ---
 
-## Chantier 6 — HAC spatio-temporel *(conditionnel — couper si non validable)*
+## Chantier 6 — HAC spatio-temporel — **COUPÉ (décision Thierry 2026-06-11)**
+
+> **Statut : coupé, documenté comme limitation assumée** (README Caveats §1).
+> Raison : pas d'ancre externe praticable — `plm::vcovSCC` (Driscoll-Kraay)
+> cible les modèles panel `plm`, pas l'estimand GLS du modèle mixte ; livrer
+> sans validation à deux voies indépendantes = exactement le risque du piège v1.
+> Alternative documentée : `vcov_cluster` à niveau grossier pour sonder la
+> dépendance inter-périodes. Le texte original du chantier est conservé
+> ci-dessous pour référence si une ancre devient disponible.
+
+### (archivé) Chantier 6 — HAC spatio-temporel *(conditionnel — couper si non validable)*
 
 > Validation externe disponible et **confirmée** : `plm::vcovSCC` = estimateur Driscoll-Kraay (1998) « consistent with cross-sectional and serial correlation ». C'est l'ancre. Pas d'ancre → on coupe (JOSS « no half-baked »).
 
