@@ -13,7 +13,7 @@ using SpatialHAC: haversine_km, scaled_re_matrix
 using MixedModels, DataFrames, StatsModels, CategoricalArrays
 using LinearAlgebra, SparseArrays, Statistics, Random
 using MixedModels: varest
-using StatsAPI: coef, response
+using StatsAPI: coef, response, vcov, stderror, coeftable, coefnames
 
 # ---- synthetic spatial panel -------------------------------------------------
 function make_panel(; nper = 380)
@@ -184,6 +184,25 @@ end
 @testset "vcov_cluster input validation" begin
     @test_throws ArgumentError vcov_cluster(m, df.g; type = :CR2)
     @test_throws ArgumentError vcov_cluster(m, df.g[1:end-1])
+end
+
+@testset "StatsAPI accessors + coeftable + show" begin
+    res = vcov_conley(m, lat, lon, yearv, [3.0])[1]
+    @test vcov(res) == res.vcov
+    @test stderror(res) == res.se
+    @test coef(res) == coef(m)                     # estimates unchanged
+    @test coefnames(res) == coefnames(m)
+    ct = coeftable(res)
+    @test ct.cols[1] == coef(m)                    # Coef. column == model estimates
+    @test ct.cols[2] == res.se
+    @test isapprox(ct.cols[3], coef(m) ./ res.se)  # z = est/se
+    txt = sprint(show, MIME("text/plain"), res)
+    @test occursin("Coef.", txt) && occursin("cutoff", txt)
+
+    rc = vcov_cluster(m, df.g; type = :CR1)
+    @test stderror(rc) == rc.se
+    @test coeftable(rc).cols[1] == coef(m)
+    @test occursin("CR1", sprint(show, MIME("text/plain"), rc))
 end
 
 @testset "OLS limit == textbook Conley (formula anchor)" begin

@@ -31,7 +31,10 @@ module SpatialHAC
 using LinearAlgebra, SparseArrays, Statistics, Random
 using MixedModels
 using MixedModels: varest
-using StatsAPI: coef, response, nobs
+using MixedModels: CoefTable
+using SpecialFunctions: erfc, erfcinv
+import StatsAPI
+using StatsAPI: coef, response, nobs, coefnames
 
 export vcov_conley, ConleyResult, suggest_cutoff, CovariogramResult,
        vcov_cluster, ClusterResult
@@ -42,12 +45,18 @@ const EARTH_RADIUS_KM = 6371.0088
     ConleyResult
 
 Result for one cutoff: fields `cutoff` (km), `vcov` (p×p), `se` (Vector),
-`n_pairs`, `min_eig` (smallest pre-floor eigenvalue), `floored::Bool`.
+`coef` (point estimates), `names` (coefficient names), `n_pairs`,
+`min_eig` (smallest pre-floor eigenvalue), `floored::Bool`.
+
+Implements the `StatsAPI` accessors `vcov`, `stderror`, `coefnames` and
+`coeftable`; `show` prints a coefficient table.
 """
 struct ConleyResult
     cutoff::Float64
     vcov::Matrix{Float64}
     se::Vector{Float64}
+    coef::Vector{Float64}
+    names::Vector{String}
     n_pairs::Int
     min_eig::Float64
     floored::Bool
@@ -56,12 +65,18 @@ end
 """
     ClusterResult
 
-Result of `vcov_cluster`: fields `vcov` (p×p), `se` (Vector), `n_clusters`,
-`type` (`:CR0`/`:CR1`/`:CR1S`), `dof` (residual degrees of freedom, N−p).
+Result of `vcov_cluster`: fields `vcov` (p×p), `se` (Vector), `coef` (point
+estimates), `names` (coefficient names), `n_clusters`, `type`
+(`:CR0`/`:CR1`/`:CR1S`), `dof` (residual degrees of freedom, N−p).
+
+Implements the `StatsAPI` accessors `vcov`, `stderror`, `coefnames` and
+`coeftable`; `show` prints a coefficient table.
 """
 struct ClusterResult
     vcov::Matrix{Float64}
     se::Vector{Float64}
+    coef::Vector{Float64}
+    names::Vector{String}
     n_clusters::Int
     type::Symbol
     dof::Int
@@ -164,6 +179,7 @@ function vcov_conley(m, lat::AbstractVector, lon::AbstractVector,
     lat = Float64.(lat); lon = Float64.(lon); period = Int.(period)
     length(lat) == n && length(lon) == n && length(period) == n ||
         throw(ArgumentError("coordinate/period vectors must match the model rows (n=$(n))"))
+    cf = Float64.(coef(m)); nm = String.(coefnames(m))
 
     cuts = sort(Float64.(cutoffs))
     nc = length(cuts)
@@ -195,7 +211,7 @@ function vcov_conley(m, lat::AbstractVector, lon::AbstractVector,
         end
         Vm = Matrix(V)
         push!(results, ConleyResult(cutoff, Vm, sqrt.(max.(diag(Vm), 0.0)),
-                                    n_pairs, min_eig, floored))
+                                    cf, nm, n_pairs, min_eig, floored))
     end
     return results
 end
@@ -252,7 +268,47 @@ function vcov_cluster(m, cluster_id::AbstractVector;
     V = bread * (factor .* meat) * bread
     V = Symmetric((V .+ V') ./ 2)
     Vm = Matrix(V)
-    return ClusterResult(Vm, sqrt.(max.(diag(Vm), 0.0)), G, type, n - p)
+    return ClusterResult(Vm, sqrt.(max.(diag(Vm), 0.0)),
+                         Float64.(coef(m)), String.(coefnames(m)), G, type, n - p)
+end
+
+# ---- StatsAPI accessors + display -------------------------------------------
+
+const _RobustResult = Union{ConleyResult,ClusterResult}
+
+StatsAPI.vcov(r::_RobustResult) = r.vcov
+StatsAPI.stderror(r::_RobustResult) = r.se
+StatsAPI.coef(r::_RobustResult) = r.coef
+StatsAPI.coefnames(r::_RobustResult) = r.names
+
+"""
+    coeftable(r; level=0.95) -> CoefTable
+
+Coefficient table for a robust result: point estimates (unchanged from the
+model), robust SEs, Wald `z = est/se`, two-sided normal p-values, and a
+`level` confidence interval.
+"""
+function StatsAPI.coeftable(r::_RobustResult; level::Real = 0.95)
+    est = r.coef; se = r.se
+    z = est ./ se
+    p = erfc.(abs.(z) ./ sqrt(2))                 # two-sided standard-normal
+    zc = -sqrt(2) * erfcinv(1 + level)            # e.g. 1.96 at level=0.95
+    lo = est .- zc .* se; hi = est .+ zc .* se
+    lvl = round(Int, 100 * level)
+    CoefTable([est, se, z, p, lo, hi],
+              ["Coef.", "Std. Error", "z", "Pr(>|z|)", "Lower $(lvl)%", "Upper $(lvl)%"],
+              r.names, 4, 3)
+end
+
+function Base.show(io::IO, mime::MIME"text/plain", r::ConleyResult)
+    println(io, "ConleyResult (spatial-HAC, cutoff = $(r.cutoff) km, ",
+            "n_pairs = $(r.n_pairs)", r.floored ? ", PSD-floored" : "", ")")
+    show(io, mime, coeftable(r))
+end
+
+function Base.show(io::IO, mime::MIME"text/plain", r::ClusterResult)
+    println(io, "ClusterResult ($(r.type), $(r.n_clusters) clusters, dof = $(r.dof))")
+    show(io, mime, coeftable(r))
 end
 
 """Group row indices by period value."""

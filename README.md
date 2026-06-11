@@ -64,8 +64,21 @@ cl = vcov_cluster(m, df.glacier; type = :CR1)   # :CR0 / :CR1 / :CR1S
 @show cl.se cl.n_clusters cl.type
 ```
 
-Each `ConleyResult` carries `cutoff`, `vcov`, `se`, `n_pairs`, `min_eig`,
-`floored`. Point estimates and Wald SEs of the model are unchanged.
+Each `ConleyResult` carries `cutoff`, `vcov`, `se`, `coef`, `names`,
+`n_pairs`, `min_eig`, `floored`. Point estimates of the model are unchanged.
+Results implement the `StatsAPI` accessors (`vcov`, `stderror`, `coef`,
+`coefnames`, `coeftable`) and pretty-print as a coefficient table:
+
+```julia
+julia> vcov_cluster(m, df.glacier; type = :CR1)
+ClusterResult (CR1, 312 clusters, dof = 18443)
+─────────────────────────────────────────────────────────
+              Coef.  Std. Error      z  Pr(>|z|)   …
+─────────────────────────────────────────────────────────
+(Intercept)    …          …         …      …
+x              …          …         …      …
+─────────────────────────────────────────────────────────
+```
 
 All cutoffs are computed in **one spatial sweep** at the largest cutoff
 (pair distances computed once), threaded over periods (`julia -t auto`).
