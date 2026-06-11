@@ -31,9 +31,18 @@ M = A'(K ⊙ êê')A = Σᵢⱼ K(dᵢⱼ)·rᵢ·rⱼ'   (kernel-weighted meat)
 A = Ω⁻¹X ;  rᵢ = Aᵢ·êᵢ ;  ê = y − Xβ̂   (marginal residuals)
 ```
 
-Bartlett kernel `K(d) = max(0, 1 − d/cutoff)` (PSD-admissible; Kelejian &
-Prucha 2007), pairs restricted to the same period (panel convention),
-great-circle distances, negative-eigenvalue flooring if needed.
+Kernel `K(u)`, `u = d/cutoff`: `:bartlett` `1−u` (default), `:bartlett2`
+`(1−u)²`, `:uniform`, `:epanechnikov`. Pairs restricted to the same period
+(panel convention), great-circle distances, negative-eigenvalue flooring if
+needed.
+
+**PSD note.** A spatial-HAC estimator is positive-semi-definite only when the
+kernel's Gram matrix is PSD in the coordinate dimension (Schoenberg class
+`Pₚ`; Kelejian & Prucha 2007, via Golubov 1981). For 2-D coordinates this holds
+for `:bartlett2` (`(1−u)² ∈ P₂`) but **not** for the linear `:bartlett`
+(`1−u ∈ P₁` only), `:uniform` or `:epanechnikov` — those rely on eigenvalue
+flooring (and warn when it triggers). Use `:bartlett2` for a guaranteed-PSD
+estimator in 2-D.
 
 > **The pitfall this package exists to avoid.** Applying `Ω⁻¹` to the
 > *residuals* (`sᵢ = xᵢ·(Ω⁻¹ê)ᵢ`) instead of the *design* is algebraically
@@ -111,6 +120,8 @@ e.g. after an internal MixedModels change).
 | Cluster-robust (CR0/CR1/CR1S) | Dense block sandwich | ~1e-15 |
 | Cluster-robust cross-language | R `clubSandwich::vcovCR` (lmer) | 1.6e-4 (optimizer-limited) |
 | Weighted models | Dense weighted Liang-Zeger sandwich | ~1e-14 |
+| Kernels (bartlett/bartlett2/uniform/epanechnikov) | Dense definitional sandwich | ~1e-15 |
+| K₂ PSD in 2-D / uniform not | Kernel Gram eigenvalues (Schoenberg P₂) | exact |
 
 ## Caveats
 
@@ -130,6 +141,8 @@ e.g. after an internal MixedModels change).
   generalized linear models. *Biometrika* 73, 13–22.
 - Kelejian, H.H., & Prucha, I.R. (2007). HAC estimation in a spatial framework.
   *J. Econometrics* 140, 131–154.
+- Golubov, B.I. (1981). On Abel–Poisson type and Riesz means.
+  *Analysis Mathematica* 7, 161–184. (kernel PSD classes `Pₚ`)
 - Cameron, A.C., & Miller, D.L. (2015). A practitioner's guide to
   cluster-robust inference. *J. Human Resources* 50, 317–372.
 - Lehner, A. (2026). Bandwidth selection for spatial HAC standard errors.

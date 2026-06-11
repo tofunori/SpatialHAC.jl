@@ -46,7 +46,7 @@ const EARTH_RADIUS_KM = 6371.0088
 
 Result for one cutoff: fields `cutoff` (km), `vcov` (p×p), `se` (Vector),
 `coef` (point estimates), `names` (coefficient names), `n_pairs`,
-`min_eig` (smallest pre-floor eigenvalue), `floored::Bool`.
+`min_eig` (smallest pre-floor eigenvalue), `floored::Bool`, `kernel::Symbol`.
 
 Implements the `StatsAPI` accessors `vcov`, `stderror`, `coefnames` and
 `coeftable`; `show` prints a coefficient table.
@@ -60,6 +60,7 @@ struct ConleyResult
     n_pairs::Int
     min_eig::Float64
     floored::Bool
+    kernel::Symbol
 end
 
 """
@@ -81,6 +82,27 @@ struct ClusterResult
     type::Symbol
     dof::Int
 end
+
+"""
+    _kernel_fun(kernel::Symbol) -> Function
+
+Map a kernel name to its weight `K(u)`, `u = d/cutoff ∈ [0, 1)`:
+`:bartlett` `1−u` (K₁), `:bartlett2` `(1−u)²` (K₂), `:uniform` `1`,
+`:epanechnikov` `1−u²`. All satisfy `K(0)=1`.
+"""
+function _kernel_fun(kernel::Symbol)
+    kernel === :bartlett     && return u -> 1.0 - u
+    kernel === :bartlett2    && return u -> (1.0 - u)^2
+    kernel === :uniform      && return u -> 1.0
+    kernel === :epanechnikov && return u -> 1.0 - u^2
+    throw(ArgumentError("unknown kernel :$(kernel) " *
+        "(use :bartlett, :bartlett2, :uniform or :epanechnikov)"))
+end
+
+# Kernels whose Gram matrix is positive semi-definite for points in ℝ² (Schoenberg
+# class P₂; Kelejian & Prucha 2007 via Golubov 1981). The linear Bartlett K₁ is in
+# P₁ only — PSD-guaranteed in 1-D, not in 2-D — hence the eigenvalue flooring.
+const _PSD2D_KERNELS = (:bartlett2,)
 
 """Great-circle distance in km (haversine)."""
 function haversine_km(lat1::Float64, lon1::Float64, lat2::Float64, lon2::Float64)::Float64
@@ -147,9 +169,10 @@ function _gls_bread_scores(m; check_tol::Float64 = 1e-6)
 end
 
 """
-    vcov_conley(m, lat, lon, period, cutoffs; check_tol=1e-6) -> Vector{ConleyResult}
+    vcov_conley(m, lat, lon, period, cutoffs; kernel=:bartlett, check_tol=1e-6)
+        -> Vector{ConleyResult}
 
-Spatial-HAC (Conley/Bartlett) covariance of the fixed effects of a fitted
+Spatial-HAC (Conley) covariance of the fixed effects of a fitted
 `LinearMixedModel`. Case-weighted fits are supported: in the weight-whitened
 space the GLS sandwich is identical once `X`, the residuals and `W = ZΛ` are
 scaled by `√w` (done internally); for an unweighted fit `√w = 1`.
@@ -159,7 +182,17 @@ Arguments:
 - `lat`, `lon`: per-row coordinates in degrees, in the model's row order.
 - `period`: per-row integer period (e.g. year); pairs are restricted to the
   same period (panel spatial-HAC convention).
-- `cutoffs`: one or more cutoff distances in km (Bartlett kernel `1 − d/c`).
+- `cutoffs`: one or more cutoff distances in km.
+- `kernel`: `:bartlett` (`1−u`, default), `:bartlett2` (`(1−u)²`), `:uniform`
+  (`1`) or `:epanechnikov` (`1−u²`), with `u = d/cutoff`.
+
+**Positive semi-definiteness.** The estimator is PSD-admissible only when the
+kernel's Gram matrix is PSD for the coordinate dimension (Schoenberg class
+`Pₚ`; Kelejian & Prucha 2007). For 2-D coordinates this holds for
+`:bartlett2` (`(1−u)² ∈ P₂`) but **not** for the linear `:bartlett` (`1−u ∈ P₁`
+only), `:uniform` or `:epanechnikov`. When a non-PSD kernel produces a negative
+eigenvalue the covariance is eigenvalue-floored (`floored=true`) and a warning
+is issued; switch to `:bartlett2` for a guaranteed-PSD estimator.
 
 All cutoffs are computed in a single spatial sweep at the largest cutoff,
 threaded over periods. A runtime self-check verifies that the reconstructed
@@ -172,9 +205,10 @@ antimeridian-aware (pairs straddling ±180° longitude would be missed).
 """
 function vcov_conley(m, lat::AbstractVector, lon::AbstractVector,
                      period::AbstractVector, cutoffs::AbstractVector{<:Real};
-                     check_tol::Float64 = 1e-6)
+                     kernel::Symbol = :bartlett, check_tol::Float64 = 1e-6)
     isempty(cutoffs) && throw(ArgumentError("no cutoffs given"))
     any(c -> c <= 0, cutoffs) && throw(ArgumentError("cutoffs must be > 0 km"))
+    kfun = _kernel_fun(kernel)                    # also validates the kernel name
     bread, S, n, p = _gls_bread_scores(m; check_tol = check_tol)
     lat = Float64.(lat); lon = Float64.(lon); period = Int.(period)
     length(lat) == n && length(lon) == n && length(period) == n ||
@@ -188,7 +222,7 @@ function vcov_conley(m, lat::AbstractVector, lon::AbstractVector,
     group_counts = [zeros(Int, nc) for _ in groups]
     Threads.@threads for gi in eachindex(groups)
         _accumulate_pairs_multi!(group_meats[gi], group_counts[gi],
-                                 S, lat, lon, groups[gi], cuts)
+                                 S, lat, lon, groups[gi], cuts, kfun)
     end
 
     diag_meat = S' * S
@@ -208,10 +242,16 @@ function vcov_conley(m, lat::AbstractVector, lon::AbstractVector,
         floored = min_eig < 0
         if floored
             V = Symmetric(ev.vectors * Diagonal(max.(ev.values, 0.0)) * ev.vectors')
+            if !(kernel in _PSD2D_KERNELS)
+                @warn "vcov_conley: kernel :$(kernel) is not PSD-guaranteed for " *
+                      "2-D coordinates (it lies in Schoenberg class P₁, not P₂); the " *
+                      "covariance was eigenvalue-floored. Use kernel=:bartlett2 for a " *
+                      "PSD-guaranteed estimator." maxlog = 1
+            end
         end
         Vm = Matrix(V)
         push!(results, ConleyResult(cutoff, Vm, sqrt.(max.(diag(Vm), 0.0)),
-                                    cf, nm, n_pairs, min_eig, floored))
+                                    cf, nm, n_pairs, min_eig, floored, kernel))
     end
     return results
 end
@@ -301,8 +341,9 @@ function StatsAPI.coeftable(r::_RobustResult; level::Real = 0.95)
 end
 
 function Base.show(io::IO, mime::MIME"text/plain", r::ConleyResult)
-    println(io, "ConleyResult (spatial-HAC, cutoff = $(r.cutoff) km, ",
-            "n_pairs = $(r.n_pairs)", r.floored ? ", PSD-floored" : "", ")")
+    println(io, "ConleyResult (spatial-HAC, kernel = :$(r.kernel), ",
+            "cutoff = $(r.cutoff) km, n_pairs = $(r.n_pairs)",
+            r.floored ? ", PSD-floored" : "", ")")
     show(io, mime, coeftable(r))
 end
 
@@ -328,7 +369,8 @@ lat/lon grid only proposes candidates; the haversine distance decides.
 function _accumulate_pairs_multi!(meats::Vector{Matrix{Float64}},
                                   counts::Vector{Int}, S::Matrix{Float64},
                                   lat::Vector{Float64}, lon::Vector{Float64},
-                                  idx::Vector{Int}, cuts::Vector{Float64})
+                                  idx::Vector{Int}, cuts::Vector{Float64},
+                                  kfun::F) where {F}
     isempty(idx) && return nothing
     p = size(S, 2)
     nc = length(cuts)
@@ -360,7 +402,7 @@ function _accumulate_pairs_multi!(meats::Vector{Matrix{Float64}},
                 for ck in 1:nc
                     c = cuts[ck]
                     d >= c && continue
-                    w = 1.0 - d / c
+                    w = kfun(d / c)
                     counts[ck] += 1
                     meat = meats[ck]
                     @inbounds for r in 1:p, cc in 1:p

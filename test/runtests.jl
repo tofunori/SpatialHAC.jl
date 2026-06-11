@@ -52,7 +52,7 @@ function dense_cluster(X, ehat, Wmat, cl, typ)
 end
 
 # dense definitional Liang-Zeger sandwich (ground truth; no shared internals)
-function dense_sandwich(X, ehat, Wmat, lat, lon, yearv, cutoff)
+function dense_sandwich(X, ehat, Wmat, lat, lon, yearv, cutoff; kfun = u -> 1.0 - u)
     n, p = size(X)
     Omega = Matrix(1.0I, n, n) + Matrix(Wmat * Wmat')
     Ad = Omega \ X
@@ -64,7 +64,7 @@ function dense_sandwich(X, ehat, Wmat, lat, lon, yearv, cutoff)
             yearv[i] == yearv[j] || continue
             d = haversine_km(lat[i], lon[i], lat[j], lon[j])
             d >= cutoff && continue
-            w = (1.0 - d / cutoff) * ehat[i] * ehat[j]
+            w = kfun(d / cutoff) * ehat[i] * ehat[j]
             Sig[i, j] = w; Sig[j, i] = w
         end
     end
@@ -203,6 +203,30 @@ end
     @test stderror(rc) == rc.se
     @test coeftable(rc).cols[1] == coef(m)
     @test occursin("CR1", sprint(show, MIME("text/plain"), rc))
+end
+
+@testset "kernels == dense definitional sandwich" begin
+    kerns = [(:bartlett, u -> 1.0 - u), (:bartlett2, u -> (1.0 - u)^2),
+             (:uniform, u -> 1.0), (:epanechnikov, u -> 1.0 - u^2)]
+    for (kern, kf) in kerns
+        res = vcov_conley(m, lat, lon, yearv, [3.0]; kernel = kern)[1]
+        Vdef = dense_sandwich(X, ehat, W, lat, lon, yearv, 3.0; kfun = kf)
+        @test maximum(abs.(res.vcov .- Vdef)) / maximum(abs.(Vdef)) < 1e-9
+        @test res.kernel === kern
+    end
+    @test_throws ArgumentError vcov_conley(m, lat, lon, yearv, [3.0]; kernel = :gaussian)
+end
+
+@testset "kernel PSD: K₂ guaranteed in 2-D, uniform can fail" begin
+    # 3-point chain: uniform Gram = [1 1 0; 1 1 1; 0 1 1] has eigenvalue 1−√2 < 0
+    xs = [0.0, 1.0, 2.0]; c = 1.5
+    Km(kf) = [(d = abs(xs[i] - xs[j]); d < c ? kf(d / c) : 0.0) for i in 1:3, j in 1:3]
+    @test minimum(eigen(Symmetric(Km(u -> 1.0))).values) < -1e-6        # uniform fails
+    # K₂ Gram is PSD for an arbitrary 2-D cloud (Schoenberg class P₂)
+    rng = Xoshiro(3); P = [(randn(rng), randn(rng)) for _ in 1:60]; cc = 1.5
+    K2 = [(d = hypot(P[i][1] - P[j][1], P[i][2] - P[j][2]); d < cc ? (1 - d / cc)^2 : 0.0)
+          for i in 1:60, j in 1:60]
+    @test minimum(eigen(Symmetric(K2)).values) > -1e-8                  # K₂ PSD
 end
 
 @testset "OLS limit == textbook Conley (formula anchor)" begin

@@ -36,11 +36,15 @@ residuals ``\hat e = y - X\hat\beta``:
 \hat\Sigma_{ij} = K(d_{ij})\, \hat e_i \hat e_j ,
 ```
 
-with the Bartlett taper ``K(d) = \max(0,\, 1 - d/c)`` (positive-semidefinite
-admissible; [Kelejian & Prucha, 2007](https://doi.org/10.1016/j.jeconom.2006.09.005)),
-pairs restricted to the same period (the panel spatial-HAC convention), and
-great-circle distances. Writing ``A = \Omega^{-1} X`` and row scores
-``r_i = A_i\, \hat e_i``,
+with a kernel taper ``K(u)``, ``u = d/c`` (default Bartlett ``1-u``; also
+``(1-u)^2``, uniform, Epanechnikov), pairs restricted to the same period (the
+panel spatial-HAC convention), and great-circle distances. The estimator is
+positive-semidefinite only for a kernel whose Gram matrix is PSD in the
+coordinate dimension (Schoenberg class ``P_p``;
+[Kelejian & Prucha, 2007](https://doi.org/10.1016/j.jeconom.2006.09.005), via
+Golubov 1981): in 2-D this holds for ``(1-u)^2 \in P_2`` but not for the linear
+Bartlett ``1-u \in P_1`` only — hence the eigenvalue flooring. Writing
+``A = \Omega^{-1} X`` and row scores ``r_i = A_i\, \hat e_i``,
 
 ```math
 M \;=\; A'\,(K \odot \hat e\hat e')\,A \;=\; \sum_{i,j} K(d_{ij})\; r_i r_j',
@@ -129,5 +133,7 @@ fields.
 - **Interpret as a lower bound**: correlation beyond the cutoff and across
   periods is not captured. Present these SEs alongside cluster-robust SEs at a
   level matched to your predictor's assignment scale (Moulton logic).
-- The result reports `min_eig` and `floored`; flooring should be rare with the
-  Bartlett kernel.
+- The result reports `min_eig`, `floored` and `kernel`. With 2-D coordinates,
+  flooring can occur for the linear `:bartlett`, `:uniform` and `:epanechnikov`
+  kernels (not PSD-guaranteed in 2-D); use `:bartlett2` for a PSD-guaranteed
+  estimator.
