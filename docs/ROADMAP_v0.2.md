@@ -42,7 +42,9 @@ v0.2.0  ← regrouper TOUS les chantiers retenus + pré-requis §0, PUIS :
 Soumission JOSS sur le tag v0.2.0 (paper.md + paper.bib)
 ```
 
-**Note JOSS vérifiée** : il n'existe **plus** de seuil dur « 1000 lignes » dans les critères JOSS actuels (révision 2026). Le vrai barème est qualitatif : *substantial scholarly effort*, ~3 mois de travail individuel minimum, *feature-complete (no half-baked solutions)*, historique public idéalement ≥6 mois, « likely to be cited ». → **Stratégie : ne pas gonfler le nombre de lignes ; soigner la complétude, la nouveauté (niche vide, vérifiée), les tests et l'historique.** La cible « ~1000 lignes » reste un repère de maturité, pas un gate.
+**Note JOSS vérifiée** : il n'existe **plus** de seuil dur « 1000 lignes » dans les critères JOSS actuels (révision 2026). Le vrai barème est qualitatif : *substantial scholarly effort*, ~3 mois de travail individuel minimum, *feature-complete (no half-baked solutions)*, « likely to be cited ». → **Stratégie : ne pas gonfler le nombre de lignes ; soigner la complétude, la nouveauté (niche vide, vérifiée), les tests et l'historique.**
+
+⚠️ **GATE DUR CONFIRMÉ (directives officielles, `docs/joss_submitting.md` du repo d'analyse, 2026-06-11)** : « *The repository must have been public for more than six months prior to submission, with active development spanning that period* » — vérification automatisée de la distribution des commits, « *a repo dump is not a history* ». SpatialHAC.jl est public depuis le **2026-06-10** → **soumission JOSS au plus tôt ~décembre 2026**, à condition de commits réguliers étalés d'ici là (pas un burst unique). Autres gates : impact recherche démontré (utilisation dans le pipeline m31n = « integration into research workflows » ✓ ; citation thèse/préprint à ajouter quand disponible) ; bonnes pratiques solo = plusieurs signaux requis (releases taggées ✓ TagBot, tests+CI ✓, docs ✓, **CONTRIBUTING ✓ ajouté 2026-06-11**, changelog à tenir) ; divulgation IA obligatoire (✓ dans paper.md). Le paper.md vit dans le repo dès maintenant ; l'envoi attend le gate.
 
 ---
 
