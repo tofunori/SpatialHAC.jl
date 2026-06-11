@@ -79,5 +79,6 @@ reconstruction, for instance after an internal MixedModels.jl change).
    not instead of — cluster-robust SEs.
 2. The candidate grid is not antimeridian-aware: pairs straddling ±180°
    longitude are missed (the distances themselves are exact).
-3. Unweighted models only; the estimated covariance structure is treated as
-   known (standard GEE practice).
+3. The estimated covariance structure is treated as known (standard GEE
+   practice). Case-weighted fits are supported: the GLS sandwich is computed
+   in the weight-whitened space (`X`, residuals and `W = ZΛ` scaled by `√w`).

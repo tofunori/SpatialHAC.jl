@@ -33,7 +33,8 @@ using MixedModels
 using MixedModels: varest
 using StatsAPI: coef, response, nobs
 
-export vcov_conley, ConleyResult, suggest_cutoff, CovariogramResult
+export vcov_conley, ConleyResult, suggest_cutoff, CovariogramResult,
+       vcov_cluster, ClusterResult
 
 const EARTH_RADIUS_KM = 6371.0088
 
@@ -84,8 +85,10 @@ end
 """
     vcov_conley(m, lat, lon, period, cutoffs; check_tol=1e-6) -> Vector{ConleyResult}
 
-Spatial-HAC (Conley/Bartlett) covariance of the fixed effects of a fitted,
-unweighted `LinearMixedModel`.
+Spatial-HAC (Conley/Bartlett) covariance of the fixed effects of a fitted
+`LinearMixedModel`. Case-weighted fits are supported: in the weight-whitened
+space the GLS sandwich is identical once `X`, the residuals and `W = ZΛ` are
+scaled by `√w` (done internally); for an unweighted fit `√w = 1`.
 
 Arguments:
 - `m`: fitted model.
@@ -114,20 +117,21 @@ function vcov_conley(m, lat::AbstractVector, lon::AbstractVector,
     isempty(cutoffs) && throw(ArgumentError("no cutoffs given"))
     any(c -> c <= 0, cutoffs) && throw(ArgumentError("cutoffs must be > 0 km"))
 
-    # weighted fits change the estimating equations; refuse with a clear error
-    # rather than letting the vcov(m) self-check fail confusingly downstream
-    if !isempty(m.sqrtwts)
-        throw(ArgumentError("vcov_conley supports unweighted models only " *
-                            "(this model was fitted with case weights)"))
-    end
+    # Case weights: in the weight-whitened space the GLS sandwich is identical
+    # once the design X, the marginal residuals ê, and W = ZΛ are each scaled by
+    # √w. `m.sqrtwts` is √(prior weights), empty for an unweighted fit (→ √w = 1,
+    # which reduces exactly to the unweighted path). The runtime self-check below
+    # holds only for this scaling, so it also guards against any double-scaling.
+    sqw = isempty(m.sqrtwts) ? ones(n) : Float64.(m.sqrtwts)
 
-    ehat = response(m) .- X * coef(m)            # marginal residuals
-    W = scaled_re_matrix(m)
+    ehat = sqw .* (response(m) .- X * coef(m))   # √w-scaled marginal residuals
+    Xw = sqw .* X                                # √w-scaled design X̃
+    W = Diagonal(sqw) * scaled_re_matrix(m)      # √w-scaled W̃ = √w⊙(ZΛ)
     q = size(W, 2)
     F = cholesky(Symmetric(sparse(1.0I, q, q) + W'W))
 
-    OinvX = X .- W * (F \ (W' * X))              # A = Ω⁻¹X (Woodbury)
-    bread = inv(Symmetric(X' * OinvX))
+    OinvX = Xw .- W * (F \ (W' * Xw))            # A = Ω̃⁻¹X̃ (Woodbury, whitened)
+    bread = inv(Symmetric(Xw' * OinvX))
 
     # runtime self-validation against the model's own vcov
     ref = Matrix(vcov(m))

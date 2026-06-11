@@ -79,6 +79,68 @@ end
     end
 end
 
+# Healthy weighted panel: a single variance component on 15 well-populated
+# groups with genuine residual noise, so the weighted REML fit stays
+# non-degenerate (σ² ≫ 0). A rich RE structure on a near-deterministic panel
+# drives σ² → 0 under case weights, which is a fitting pathology, not a
+# property of the estimator — so we validate the weighted path on a model the
+# data actually support.
+function make_weighted_panel(; ng = 15, per = 50, seed = 11)
+    rng = Xoshiro(seed); rows = NamedTuple[]
+    for yr in (2001, 2002), g in 1:ng, k in 1:per
+        i = (g - 1) * per + k
+        lat = 51.0 + 0.05g + 0.002 * randn(rng)
+        lon = -117.0 - 0.07g - 0.002 * randn(rng)
+        x = sin(0.31i + yr)
+        y = 0.4 + 0.3x + 0.5 * sin(g) + 0.6 * randn(rng)
+        push!(rows, (g = string("g", g), yr = yr, lat = lat, lon = lon, x = x, y = y))
+    end
+    d = DataFrame(rows); d.g = categorical(d.g); d
+end
+
+@testset "weighted model == dense weighted sandwich" begin
+    dfw = make_weighted_panel(); nw = nrow(dfw)
+    latw = Float64.(dfw.lat); lonw = Float64.(dfw.lon); yw = Int.(dfw.yr)
+    rng = Xoshiro(7); wts = rand(rng, nw) .+ 0.5
+    mw = fit(MixedModel, @formula(y ~ 1 + x + (1 | g)), dfw;
+             wts = wts, progress = false)
+    @test varest(mw) > 1e-3                       # guard: fit is non-degenerate
+
+    # independent ground truth: scale the raw design/residuals/W by √w (the
+    # weights the user passed) and run the same dense Liang-Zeger sandwich.
+    sqw = sqrt.(wts)
+    Xw = sqw .* mw.X
+    ehatw = sqw .* (response(mw) .- mw.X * coef(mw))
+    Ww = Diagonal(sqw) * scaled_re_matrix(mw)
+
+    # the internal self-check (varest·bread ≈ vcov(mw)) must hold for weighted too
+    q = size(Ww, 2)
+    F = cholesky(Symmetric(sparse(1.0I, q, q) + Ww'Ww))
+    A = Xw .- Ww * (F \ (Ww' * Xw))
+    myv = varest(mw) .* inv(Symmetric(Xw'A))
+    refw = Matrix(vcov(mw))
+    @test maximum(abs.(myv .- refw)) / maximum(abs.(refw)) < 1e-8
+
+    cuts = [20.0, 40.0, 80.0]
+    res = vcov_conley(mw, latw, lonw, yw, cuts)
+    for (k, c) in enumerate(cuts)
+        Vdef = dense_sandwich(Xw, ehatw, Ww, latw, lonw, yw, c)
+        @test maximum(abs.(res[k].vcov .- Vdef)) / maximum(abs.(Vdef)) < 1e-9
+    end
+end
+
+@testset "unit weights == unweighted fit" begin
+    # wts = 1 (√w = 1) must reproduce the unweighted spatial SEs exactly
+    dfw = make_weighted_panel(); nw = nrow(dfw)
+    latw = Float64.(dfw.lat); lonw = Float64.(dfw.lon); yw = Int.(dfw.yr)
+    m0 = fit(MixedModel, @formula(y ~ 1 + x + (1 | g)), dfw; progress = false)
+    m1 = fit(MixedModel, @formula(y ~ 1 + x + (1 | g)), dfw;
+             wts = ones(nw), progress = false)
+    r0 = vcov_conley(m0, latw, lonw, yw, [40.0])[1]
+    r1 = vcov_conley(m1, latw, lonw, yw, [40.0])[1]
+    @test maximum(abs.(r0.vcov .- r1.vcov)) / maximum(abs.(r0.vcov)) < 1e-6
+end
+
 @testset "OLS limit == textbook Conley (formula anchor)" begin
     CUT = 3.0
     beta_ols = (X'X) \ (X' * df.y)

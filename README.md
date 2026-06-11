@@ -94,7 +94,8 @@ e.g. after an internal MixedModels change).
    Report a cutoff-sensitivity curve; cite alongside cluster-robust SEs.
 2. The candidate grid is not antimeridian-aware (pairs straddling ±180°
    longitude are missed).
-3. Unweighted models only; `Ω̂` treated as known (standard GEE practice).
+3. `Ω̂` treated as known (standard GEE practice). Case-weighted fits are
+   supported (the GLS sandwich is computed in the weight-whitened space).
 
 ## References
 
