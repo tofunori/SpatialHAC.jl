@@ -310,6 +310,49 @@ function brute_covariogram(e, la, lo, per; nbins, max_frac)
     return centers, C, cnt
 end
 
+# brute covariogram C, semivariogram γ, and half-sum-of-squares m2 per bin
+function brute_diag(e, la, lo, per; nbins, max_frac)
+    n = length(e); dmax = 0.0
+    for i in 1:n, j in (i+1):n
+        per[i] == per[j] || continue
+        dmax = max(dmax, haversine_km(la[i], lo[i], la[j], lo[j]))
+    end
+    hmax = max_frac * dmax; width = hmax / nbins
+    sC = zeros(nbins); sG = zeros(nbins); sM = zeros(nbins); cnt = zeros(Int, nbins)
+    for i in 1:n, j in (i+1):n
+        per[i] == per[j] || continue
+        d = haversine_km(la[i], lo[i], la[j], lo[j]); d >= hmax && continue
+        b = min(nbins, floor(Int, d / width) + 1)
+        sC[b] += e[i] * e[j]; sG[b] += 0.5 * (e[i] - e[j])^2
+        sM[b] += 0.5 * (e[i]^2 + e[j]^2); cnt[b] += 1
+    end
+    f(s) = [cnt[b] > 0 ? s[b] / cnt[b] : NaN for b in 1:nbins]
+    return f(sC), f(sG), f(sM), cnt
+end
+
+@testset "covariogram/variogram == brute force + exact γ = m2 − C" begin
+    rng = Xoshiro(21); ns = 240
+    la2 = 51.0 .+ 0.4 .* rand(rng, ns)
+    lo2 = -117.0 .- 0.5 .* rand(rng, ns)
+    pe2 = [i <= ns ÷ 2 ? 2001 : 2002 for i in 1:ns]
+    e2 = randn(rng, ns)
+    cv = covariogram(e2, la2, lo2, pe2; nbins = 40)
+    vg = variogram(e2, la2, lo2, pe2; nbins = 40)
+    Cb, Gb, Mb, cnt = brute_diag(e2, la2, lo2, pe2; nbins = 40, max_frac = 2 / 3)
+    @test cv.kind === :covariogram && vg.kind === :semivariogram
+    @test cv.n_pairs == cnt
+    for b in 1:40
+        cnt[b] == 0 && continue
+        @test cv.value[b] ≈ Cb[b] atol = 1e-12          # covariogram == brute
+        @test vg.value[b] ≈ Gb[b] atol = 1e-12          # semivariogram == brute
+        @test Gb[b] ≈ Mb[b] - Cb[b] atol = 1e-12        # exact identity γ = m2 − C
+        @test vg.value[b] ≈ Mb[b] - cv.value[b] atol = 1e-12  # ties the two funcs
+    end
+    # model method and the C(0)−C(h) framing (loose, second-order stationarity)
+    @test variogram(e2, la2, lo2, pe2; distance = :euclidean).distance === :euclidean
+    @test occursin("semivariogram", sprint(show, MIME("text/plain"), vg))
+end
+
 @testset "covariogram == brute-force reference (no subsample)" begin
     rng = Xoshiro(7)
     ns = 240

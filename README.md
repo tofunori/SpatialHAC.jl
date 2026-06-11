@@ -101,6 +101,23 @@ in the bandwidth — neither tiny nor huge cutoffs are conservative — and that
 this selector controls test size where fixed bandwidths fail. Still report a
 sensitivity curve around the selected value.
 
+### Spatial diagnostics
+
+`covariogram` and `variogram` expose the residual spatial-dependence structure
+as first-class diagnostics (same binning machinery as `suggest_cutoff`):
+
+```julia
+cg = covariogram(m, df.lat, df.lon, df.year)   # Ĉ(h): binned mean of êᵢ·êⱼ
+vg = variogram(m, df.lat, df.lon, df.year)     # γ̂(h) = ½·mean[(êᵢ−êⱼ)²]
+cg.h        # bin centers
+cg.value    # Ĉ(h) — decays from the residual variance toward 0
+vg.value    # γ̂(h) — rises from the nugget toward the sill
+```
+
+`variogram` returns the **semivariogram** `γ` (not `2γ`), matching `gstat` and
+`GeoStats.jl`. Under second-order stationarity `γ(h) = Ĉ(0) − Ĉ(h)`. Both
+accept `nbins`, `max_frac`, `max_points`, `rng` and `distance`.
+
 ## Safety
 
 `vcov_conley` self-validates at runtime: the reconstructed `Ω` must reproduce
@@ -125,6 +142,8 @@ e.g. after an internal MixedModels change).
 | Kernels (bartlett/bartlett2/uniform/epanechnikov) | Dense definitional sandwich | ~1e-15 |
 | K₂ PSD in 2-D / uniform not | Kernel Gram eigenvalues (Schoenberg P₂) | exact |
 | Euclidean distance | Dense planar sandwich | ~1e-15 |
+| Covariogram / variogram | Independent brute-force binning | ~1e-12 |
+| Semivariogram identity | `γ = m₂ − Ĉ` per bin (exact) | ~1e-12 |
 
 ## Caveats
 

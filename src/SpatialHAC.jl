@@ -37,7 +37,8 @@ import StatsAPI
 using StatsAPI: coef, response, nobs, coefnames
 
 export vcov_conley, ConleyResult, suggest_cutoff, CovariogramResult,
-       vcov_cluster, ClusterResult
+       vcov_cluster, ClusterResult,
+       covariogram, variogram, SpatialDiagnostic
 
 const EARTH_RADIUS_KM = 6371.0088
 
@@ -118,6 +119,13 @@ end
 """Planar Euclidean distance (coordinates in the same unit as the cutoff)."""
 euclidean_dist(x1::Float64, y1::Float64, x2::Float64, y2::Float64)::Float64 =
     hypot(x1 - x2, y1 - y2)
+
+"""Map a `distance` name to its function (validates the name)."""
+function _distance_fun(distance::Symbol)
+    distance === :haversine && return haversine_km
+    distance === :euclidean && return euclidean_dist
+    throw(ArgumentError("distance must be :haversine or :euclidean"))
+end
 
 """
     scaled_re_matrix(m::LinearMixedModel) -> SparseMatrixCSC
@@ -220,9 +228,7 @@ function vcov_conley(m, lat::AbstractVector, lon::AbstractVector,
     isempty(cutoffs) && throw(ArgumentError("no cutoffs given"))
     any(c -> c <= 0, cutoffs) && throw(ArgumentError("cutoffs must be > 0"))
     kfun = _kernel_fun(kernel)                    # also validates the kernel name
-    distance in (:haversine, :euclidean) ||
-        throw(ArgumentError("distance must be :haversine or :euclidean"))
-    distfun = distance === :haversine ? haversine_km : euclidean_dist
+    distfun = _distance_fun(distance)             # also validates the distance name
     bread, S, n, p = _gls_bread_scores(m; check_tol = check_tol)
     lat = Float64.(lat); lon = Float64.(lon); period = Int.(period)
     length(lat) == n && length(lon) == n && length(period) == n ||
@@ -502,52 +508,12 @@ function suggest_cutoff(ehat::AbstractVector, lat::AbstractVector,
                         lon::AbstractVector, period::AbstractVector;
                         nbins::Int = 150, max_frac::Float64 = 2 / 3,
                         eta::Float64 = 0.0, max_points::Int = 10_000,
-                        rng::AbstractRNG = Xoshiro(2026))
-    n = length(ehat)
-    length(lat) == n && length(lon) == n && length(period) == n ||
-        throw(ArgumentError("residual/coordinate/period vectors must have equal length"))
-    nbins >= 2 || throw(ArgumentError("nbins must be >= 2"))
-    0 < max_frac <= 1 || throw(ArgumentError("max_frac must be in (0, 1]"))
+                        rng::AbstractRNG = Xoshiro(2026),
+                        distance::Symbol = :haversine)
     eta >= 0 || throw(ArgumentError("eta must be >= 0"))
-
-    e = Float64.(ehat); la = Float64.(lat); lo = Float64.(lon)
-    per = Int.(period)
-    use = n <= max_points ? collect(1:n) : sort!(randperm(rng, n)[1:max_points])
-
-    groups = _period_groups(per[use])
-    for g in groups                       # back to original row indices
-        @inbounds for k in eachindex(g)
-            g[k] = use[g[k]]
-        end
-    end
-
-    # pass 1: maximum same-period inter-point distance on the subsample
-    dmax = 0.0
-    for g in groups, ii in eachindex(g), jj in (ii + 1):length(g)
-        i = g[ii]; j = g[jj]
-        d = haversine_km(la[i], lo[i], la[j], lo[j])
-        d > dmax && (dmax = d)
-    end
-    dmax > 0 || throw(ArgumentError(
-        "no same-period pair with positive distance; cannot bin a covariogram"))
-
-    hmax = max_frac * dmax
-    width = hmax / nbins
-
-    # pass 2: bin the residual cross-products
-    sums = zeros(nbins)
-    counts = zeros(Int, nbins)
-    for g in groups, ii in eachindex(g), jj in (ii + 1):length(g)
-        i = g[ii]; j = g[jj]
-        d = haversine_km(la[i], lo[i], la[j], lo[j])
-        d >= hmax && continue
-        b = min(nbins, floor(Int, d / width) + 1)
-        sums[b] += e[i] * e[j]
-        counts[b] += 1
-    end
-
-    centers = [(b - 0.5) * width for b in 1:nbins]
-    C = [counts[b] > 0 ? sums[b] / counts[b] : NaN for b in 1:nbins]
+    centers, C, counts, n_used = _binned_pairs((a, b) -> a * b, ehat, lat, lon, period;
+        nbins = nbins, max_frac = max_frac, max_points = max_points,
+        rng = rng, distance = distance)
 
     # Lehner Eq. (5): ς̂ = min{ h_b : |Ĉ(h_b)| ≤ η }; with η = 0 this is the
     # first sign change of Ĉ relative to its short-range sign.
@@ -564,7 +530,137 @@ function suggest_cutoff(ehat::AbstractVector, lat::AbstractVector,
         end
         s0 == 0.0 && (s0 = sign(c))
     end
-    return CovariogramResult(cutoff, centers, C, counts, length(use), crossed)
+    return CovariogramResult(cutoff, centers, C, counts, n_used, crossed)
+end
+
+# ---- shared pair-binning + spatial diagnostics ------------------------------
+
+"""
+    _binned_pairs(statfn, ehat, lat, lon, period; kwargs...) -> (h, value, counts, n_used)
+
+Bin a per-pair statistic `statfn(êᵢ, êⱼ)` over same-period pairs by distance.
+`statfn = (a,b)->a*b` gives the covariogram; `(a,b)->0.5*(a-b)^2` gives the
+semivariogram. Rows are subsampled (seeded) above `max_points` (pairs are
+O(n²)). Shared by `suggest_cutoff`, `covariogram` and `variogram`.
+"""
+function _binned_pairs(statfn::SF, ehat::AbstractVector, lat::AbstractVector,
+                       lon::AbstractVector, period::AbstractVector;
+                       nbins::Int, max_frac::Float64, max_points::Int,
+                       rng::AbstractRNG, distance::Symbol) where {SF}
+    n = length(ehat)
+    length(lat) == n && length(lon) == n && length(period) == n ||
+        throw(ArgumentError("residual/coordinate/period vectors must have equal length"))
+    nbins >= 2 || throw(ArgumentError("nbins must be >= 2"))
+    0 < max_frac <= 1 || throw(ArgumentError("max_frac must be in (0, 1]"))
+    distfun = _distance_fun(distance)
+
+    e = Float64.(ehat); la = Float64.(lat); lo = Float64.(lon); per = Int.(period)
+    use = n <= max_points ? collect(1:n) : sort!(randperm(rng, n)[1:max_points])
+    groups = _period_groups(per[use])
+    for g in groups                       # back to original row indices
+        @inbounds for k in eachindex(g)
+            g[k] = use[g[k]]
+        end
+    end
+
+    dmax = 0.0                            # pass 1: max same-period distance
+    for g in groups, ii in eachindex(g), jj in (ii + 1):length(g)
+        i = g[ii]; j = g[jj]
+        d = distfun(la[i], lo[i], la[j], lo[j])
+        d > dmax && (dmax = d)
+    end
+    dmax > 0 || throw(ArgumentError(
+        "no same-period pair with positive distance; cannot bin"))
+
+    hmax = max_frac * dmax
+    width = hmax / nbins
+    sums = zeros(nbins); counts = zeros(Int, nbins)
+    for g in groups, ii in eachindex(g), jj in (ii + 1):length(g)
+        i = g[ii]; j = g[jj]
+        d = distfun(la[i], lo[i], la[j], lo[j])
+        d >= hmax && continue
+        b = min(nbins, floor(Int, d / width) + 1)
+        sums[b] += statfn(e[i], e[j])
+        counts[b] += 1
+    end
+    centers = [(b - 0.5) * width for b in 1:nbins]
+    value = [counts[b] > 0 ? sums[b] / counts[b] : NaN for b in 1:nbins]
+    return centers, value, counts, length(use)
+end
+
+"""
+    SpatialDiagnostic
+
+Empirical spatial diagnostic of regression residuals (`covariogram` or
+`variogram`): fields `kind` (`:covariogram` or `:semivariogram`), `h` (bin
+centers), `value` (`Ĉ(h)` or `γ̂(h)` per bin, `NaN` for empty bins), `n_pairs`
+(per bin), `n_used` (rows after subsampling), `distance`.
+"""
+struct SpatialDiagnostic
+    kind::Symbol
+    h::Vector{Float64}
+    value::Vector{Float64}
+    n_pairs::Vector{Int}
+    n_used::Int
+    distance::Symbol
+end
+
+"""
+    covariogram(m, lat, lon, period; kwargs...) -> SpatialDiagnostic
+    covariogram(ehat, lat, lon, period; kwargs...) -> SpatialDiagnostic
+
+Empirical **covariogram** `Ĉ(h)` of the (marginal) residuals: the binned mean
+of products `êᵢ·êⱼ` over same-period pairs at distance `≈ h` (the same quantity
+the `suggest_cutoff` selector operates on, exposed as a diagnostic). `Ĉ(h)`
+starts near the residual variance at `h→0` and decays toward 0.
+
+Keywords: `nbins=150`, `max_frac=2/3` (bins span `max_frac × max distance`),
+`max_points=10_000` (seeded subsample above this; pairs are O(n²)),
+`rng=Xoshiro(2026)`, `distance=:haversine` (or `:euclidean`).
+"""
+covariogram(m::LinearMixedModel, lat, lon, period; kwargs...) =
+    covariogram(response(m) .- m.X * coef(m), lat, lon, period; kwargs...)
+
+function covariogram(ehat::AbstractVector, lat::AbstractVector, lon::AbstractVector,
+                     period::AbstractVector; nbins::Int = 150, max_frac::Float64 = 2 / 3,
+                     max_points::Int = 10_000, rng::AbstractRNG = Xoshiro(2026),
+                     distance::Symbol = :haversine)
+    h, v, c, nu = _binned_pairs((a, b) -> a * b, ehat, lat, lon, period;
+        nbins = nbins, max_frac = max_frac, max_points = max_points,
+        rng = rng, distance = distance)
+    return SpatialDiagnostic(:covariogram, h, v, c, nu, distance)
+end
+
+"""
+    variogram(m, lat, lon, period; kwargs...) -> SpatialDiagnostic
+    variogram(ehat, lat, lon, period; kwargs...) -> SpatialDiagnostic
+
+Empirical **semivariogram** `γ̂(h) = ½·mean[(êᵢ−êⱼ)²]` of the (marginal)
+residuals over same-period pairs at distance `≈ h` (Matheron estimator). Note
+this returns `γ` (the semivariogram), not the variogram `2γ` — matching `gstat`
+and `GeoStats.jl`. Under second-order stationarity `γ(h) = Ĉ(0) − Ĉ(h)` with
+`Ĉ(0)` the residual variance (sill); `γ̂` rises from the nugget toward the sill.
+
+Same keywords as [`covariogram`](@ref).
+"""
+variogram(m::LinearMixedModel, lat, lon, period; kwargs...) =
+    variogram(response(m) .- m.X * coef(m), lat, lon, period; kwargs...)
+
+function variogram(ehat::AbstractVector, lat::AbstractVector, lon::AbstractVector,
+                   period::AbstractVector; nbins::Int = 150, max_frac::Float64 = 2 / 3,
+                   max_points::Int = 10_000, rng::AbstractRNG = Xoshiro(2026),
+                   distance::Symbol = :haversine)
+    h, v, c, nu = _binned_pairs((a, b) -> 0.5 * (a - b)^2, ehat, lat, lon, period;
+        nbins = nbins, max_frac = max_frac, max_points = max_points,
+        rng = rng, distance = distance)
+    return SpatialDiagnostic(:semivariogram, h, v, c, nu, distance)
+end
+
+function Base.show(io::IO, ::MIME"text/plain", d::SpatialDiagnostic)
+    nfull = count(>(0), d.n_pairs)
+    println(io, "SpatialDiagnostic ($(d.kind), $(nfull)/$(length(d.h)) non-empty bins, ",
+            "n_used = $(d.n_used), distance = :$(d.distance))")
+    print(io, "  h ∈ [$(round(minimum(d.h); digits=3)), $(round(maximum(d.h); digits=3))]")
 end
 
 end # module
