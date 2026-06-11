@@ -33,6 +33,24 @@ function make_panel(; nper = 380)
     return df
 end
 
+# dense block cluster-robust sandwich (ground truth; forms Ω densely)
+function dense_cluster(X, ehat, Wmat, cl, typ)
+    n, p = size(X)
+    Omega = Matrix(1.0I, n, n) + Matrix(Wmat * Wmat')
+    Ad = Omega \ X
+    bread = inv(Symmetric(X' * Ad))
+    r = Ad .* ehat                          # rᵢ = (Ω⁻¹X)ᵢ·êᵢ
+    sums = Dict{Any,Vector{Float64}}()
+    for i in 1:n
+        v = get!(() -> zeros(p), sums, cl[i]); v .+= r[i, :]
+    end
+    G = length(sums); M = zeros(p, p)
+    for sg in values(sums); M .+= sg * sg'; end
+    f = typ === :CR0 ? 1.0 : typ === :CR1 ? G / (G - 1) :
+        (G * (n - 1)) / ((G - 1) * (n - p))
+    return bread * (f .* M) * bread
+end
+
 # dense definitional Liang-Zeger sandwich (ground truth; no shared internals)
 function dense_sandwich(X, ehat, Wmat, lat, lon, yearv, cutoff)
     n, p = size(X)
@@ -139,6 +157,33 @@ end
     r0 = vcov_conley(m0, latw, lonw, yw, [40.0])[1]
     r1 = vcov_conley(m1, latw, lonw, yw, [40.0])[1]
     @test maximum(abs.(r0.vcov .- r1.vcov)) / maximum(abs.(r0.vcov)) < 1e-6
+end
+
+@testset "vcov_cluster == dense block sandwich (CR0/CR1/CR1S)" begin
+    # cluster by the RE grouping (g) and by a coarser 3-region grouping
+    region = [string("r", (parse(Int, String(df.g[i])[2:end]) - 1) ÷ 10 + 1)
+              for i in 1:n]
+    for cl in (df.g, region), typ in (:CR0, :CR1, :CR1S)
+        res = vcov_cluster(m, cl; type = typ)
+        Vd = dense_cluster(X, ehat, W, cl, typ)
+        @test maximum(abs.(res.vcov .- Vd)) / maximum(abs.(Vd)) < 1e-9
+        @test res.type === typ
+        @test res.dof == n - p
+    end
+end
+
+@testset "singleton clusters == GLS-HC0" begin
+    # each row its own cluster → CR0 meat = Σ rᵢrᵢ' = GLS-HC0; matches the
+    # degenerate (tiny-cutoff) Conley sandwich diagonal-meat limit.
+    rc = vcov_cluster(m, collect(1:n); type = :CR0)
+    rh = vcov_conley(m, lat, lon, yearv, [1e-9])[1]
+    @test maximum(abs.(rc.vcov .- rh.vcov)) / maximum(abs.(rh.vcov)) < 1e-7
+    @test rc.n_clusters == n
+end
+
+@testset "vcov_cluster input validation" begin
+    @test_throws ArgumentError vcov_cluster(m, df.g; type = :CR2)
+    @test_throws ArgumentError vcov_cluster(m, df.g[1:end-1])
 end
 
 @testset "OLS limit == textbook Conley (formula anchor)" begin

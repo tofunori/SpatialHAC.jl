@@ -15,6 +15,11 @@ To our knowledge, no existing package computes spatial-HAC standard errors on
 mixed models at this scale: `conleyreg`/`fixest`/`acreg` are OLS/GLM-only, and
 `clubSandwich` supports mixed models but is neither spatial nor scalable.
 
+Cluster-robust standard errors (`vcov_cluster`, CR0/CR1/CR1S) are also provided
+on the same GLS estimand, for triangulation alongside the spatial correction;
+they validate against `clubSandwich` and scale by per-cluster accumulation.
+Case-weighted fits are supported throughout.
+
 ## The estimator
 
 For the GLS estimator of a fitted LMM (`V = σ²Ω`, `Ω = I + WW'`, `W = ZΛ`):
@@ -53,6 +58,10 @@ res = vcov_conley(m, df.latitude, df.longitude, df.year, [5.0, 15.0, 25.0, 50.0]
 for r in res
     @show r.cutoff r.se r.n_pairs r.floored
 end
+
+# cluster-robust SEs on the same GLS estimand (triangulation)
+cl = vcov_cluster(m, df.glacier; type = :CR1)   # :CR0 / :CR1 / :CR1S
+@show cl.se cl.n_clusters cl.type
 ```
 
 Each `ConleyResult` carries `cutoff`, `vcov`, `se`, `n_pairs`, `min_eig`,
@@ -86,6 +95,9 @@ e.g. after an internal MixedModels change).
 | Coverage Monte Carlo | Spatial GP errors, 300 reps | ≈90% vs 53% (Wald) |
 | Covariogram selector | Brute-force binned covariogram + selection rule | exact |
 | Range recovery | Spherical-GP field, known 25 km range | within [0.5, 1.6]×R |
+| Cluster-robust (CR0/CR1/CR1S) | Dense block sandwich | ~1e-15 |
+| Cluster-robust cross-language | R `clubSandwich::vcovCR` (lmer) | 1.6e-4 (optimizer-limited) |
+| Weighted models | Dense weighted Liang-Zeger sandwich | ~1e-14 |
 
 ## Caveats
 

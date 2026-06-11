@@ -53,6 +53,20 @@ struct ConleyResult
     floored::Bool
 end
 
+"""
+    ClusterResult
+
+Result of `vcov_cluster`: fields `vcov` (p×p), `se` (Vector), `n_clusters`,
+`type` (`:CR0`/`:CR1`/`:CR1S`), `dof` (residual degrees of freedom, N−p).
+"""
+struct ClusterResult
+    vcov::Matrix{Float64}
+    se::Vector{Float64}
+    n_clusters::Int
+    type::Symbol
+    dof::Int
+end
+
 """Great-circle distance in km (haversine)."""
 function haversine_km(lat1::Float64, lon1::Float64, lat2::Float64, lon2::Float64)::Float64
     phi1 = deg2rad(lat1); phi2 = deg2rad(lat2)
@@ -83,6 +97,41 @@ function scaled_re_matrix(m)::SparseMatrixCSC{Float64,Int}
 end
 
 """
+    _gls_bread_scores(m; check_tol=1e-6) -> (bread, S, n, p)
+
+Shared GLS bread `B = (X'Ω⁻¹X)⁻¹` and per-row scores `S[i,:] = (Ω⁻¹X)ᵢ·êᵢ`
+for the fixed-effects sandwich, used by both `vcov_conley` and `vcov_cluster`.
+Case weights are handled by whitening (`X`, `ê`, `W = ZΛ` scaled by `√w`).
+Runtime-validates that the reconstructed `Ω` reproduces `vcov(m)` and errors
+otherwise (closing the only silent-corruption channel).
+"""
+function _gls_bread_scores(m; check_tol::Float64 = 1e-6)
+    X = m.X
+    n, p = size(X)
+    # Case weights: in the weight-whitened space the GLS sandwich is identical
+    # once X, ê and W = ZΛ are each scaled by √w. `m.sqrtwts` is √(prior
+    # weights), empty for an unweighted fit (→ √w = 1). The self-check below
+    # holds only for this scaling, so it also guards against double-scaling.
+    sqw = isempty(m.sqrtwts) ? ones(n) : Float64.(m.sqrtwts)
+    ehat = sqw .* (response(m) .- X * coef(m))   # √w-scaled marginal residuals
+    Xw = sqw .* X                                # √w-scaled design X̃
+    W = Diagonal(sqw) * scaled_re_matrix(m)      # √w-scaled W̃ = √w⊙(ZΛ)
+    q = size(W, 2)
+    F = cholesky(Symmetric(sparse(1.0I, q, q) + W'W))
+    OinvX = Xw .- W * (F \ (W' * Xw))            # A = Ω̃⁻¹X̃ (Woodbury, whitened)
+    bread = inv(Symmetric(Xw' * OinvX))
+
+    ref = Matrix(vcov(m))
+    relerr = maximum(abs.(varest(m) .* bread .- ref)) / maximum(abs.(ref))
+    relerr < check_tol || error(
+        "SpatialHAC: W reconstruction does not reproduce vcov(m) " *
+        "(rel. err = $(relerr)); refusing to compute robust SEs.")
+
+    S = OinvX .* ehat                            # row scores rᵢ = Aᵢ·êᵢ
+    return Matrix(bread), S, n, p
+end
+
+"""
     vcov_conley(m, lat, lon, period, cutoffs; check_tol=1e-6) -> Vector{ConleyResult}
 
 Spatial-HAC (Conley/Bartlett) covariance of the fixed effects of a fitted
@@ -109,38 +158,12 @@ antimeridian-aware (pairs straddling ±180° longitude would be missed).
 function vcov_conley(m, lat::AbstractVector, lon::AbstractVector,
                      period::AbstractVector, cutoffs::AbstractVector{<:Real};
                      check_tol::Float64 = 1e-6)
-    X = m.X
-    n, p = size(X)
+    isempty(cutoffs) && throw(ArgumentError("no cutoffs given"))
+    any(c -> c <= 0, cutoffs) && throw(ArgumentError("cutoffs must be > 0 km"))
+    bread, S, n, p = _gls_bread_scores(m; check_tol = check_tol)
     lat = Float64.(lat); lon = Float64.(lon); period = Int.(period)
     length(lat) == n && length(lon) == n && length(period) == n ||
         throw(ArgumentError("coordinate/period vectors must match the model rows (n=$(n))"))
-    isempty(cutoffs) && throw(ArgumentError("no cutoffs given"))
-    any(c -> c <= 0, cutoffs) && throw(ArgumentError("cutoffs must be > 0 km"))
-
-    # Case weights: in the weight-whitened space the GLS sandwich is identical
-    # once the design X, the marginal residuals ê, and W = ZΛ are each scaled by
-    # √w. `m.sqrtwts` is √(prior weights), empty for an unweighted fit (→ √w = 1,
-    # which reduces exactly to the unweighted path). The runtime self-check below
-    # holds only for this scaling, so it also guards against any double-scaling.
-    sqw = isempty(m.sqrtwts) ? ones(n) : Float64.(m.sqrtwts)
-
-    ehat = sqw .* (response(m) .- X * coef(m))   # √w-scaled marginal residuals
-    Xw = sqw .* X                                # √w-scaled design X̃
-    W = Diagonal(sqw) * scaled_re_matrix(m)      # √w-scaled W̃ = √w⊙(ZΛ)
-    q = size(W, 2)
-    F = cholesky(Symmetric(sparse(1.0I, q, q) + W'W))
-
-    OinvX = Xw .- W * (F \ (W' * Xw))            # A = Ω̃⁻¹X̃ (Woodbury, whitened)
-    bread = inv(Symmetric(Xw' * OinvX))
-
-    # runtime self-validation against the model's own vcov
-    ref = Matrix(vcov(m))
-    relerr = maximum(abs.(varest(m) .* bread .- ref)) / maximum(abs.(ref))
-    relerr < check_tol || error(
-        "vcov_conley: W reconstruction does not reproduce vcov(m) " *
-        "(rel. err = $(relerr)); refusing to compute spatial SEs.")
-
-    S = OinvX .* ehat                            # row scores rᵢ = Aᵢ·êᵢ
 
     cuts = sort(Float64.(cutoffs))
     nc = length(cuts)
@@ -175,6 +198,61 @@ function vcov_conley(m, lat::AbstractVector, lon::AbstractVector,
                                     n_pairs, min_eig, floored))
     end
     return results
+end
+
+"""
+    vcov_cluster(m, cluster_id; type=:CR1, check_tol=1e-6) -> ClusterResult
+
+Cluster-robust covariance of the fixed effects of a fitted `LinearMixedModel`,
+on the GLS estimand (same bread `B = (X'Ω⁻¹X)⁻¹` as [`vcov_conley`](@ref)).
+The meat sums the per-cluster outer products of the row scores
+`rᵢ = (Ω⁻¹X)ᵢ·êᵢ`:
+
+```
+M = Σ_g (Σ_{i∈g} rᵢ)(Σ_{i∈g} rᵢ)' ;   Var(β̂) = B · M · B
+```
+
+`cluster_id` is a per-row label vector (any type, compared by equality).
+Sums are accumulated by cluster — no global N×N matrix is ever formed, so this
+scales to millions of rows and thousands of clusters.
+
+`type` sets the small-sample factor (Cameron & Miller 2015; clubSandwich):
+- `:CR0`  no correction (Liang & Zeger 1986 sandwich)
+- `:CR1`  × `m/(m−1)`               (m = number of clusters)
+- `:CR1S` × `(m(N−1))/((m−1)(N−p))` (Stata's default)
+
+Case-weighted fits are supported (scores are formed in the weight-whitened
+space). The meat is PSD by construction, so no eigenvalue flooring is needed.
+A runtime self-check verifies the reconstructed `Ω` reproduces `vcov(m)`.
+"""
+function vcov_cluster(m, cluster_id::AbstractVector;
+                      type::Symbol = :CR1, check_tol::Float64 = 1e-6)
+    type in (:CR0, :CR1, :CR1S) ||
+        throw(ArgumentError("type must be :CR0, :CR1 or :CR1S (got :$(type))"))
+    bread, S, n, p = _gls_bread_scores(m; check_tol = check_tol)
+    length(cluster_id) == n ||
+        throw(ArgumentError("cluster_id length must match the model rows (n=$(n))"))
+
+    sums = Dict{Any,Vector{Float64}}()
+    @inbounds for i in 1:n
+        v = get!(() -> zeros(p), sums, cluster_id[i])
+        for k in 1:p
+            v[k] += S[i, k]
+        end
+    end
+    G = length(sums)
+    meat = zeros(p, p)
+    for sg in values(sums)
+        meat .+= sg * sg'
+    end
+
+    factor = type === :CR0  ? 1.0 :
+             type === :CR1  ? G / (G - 1) :
+                              (G * (n - 1)) / ((G - 1) * (n - p))   # :CR1S
+    V = bread * (factor .* meat) * bread
+    V = Symmetric((V .+ V') ./ 2)
+    Vm = Matrix(V)
+    return ClusterResult(Vm, sqrt.(max.(diag(Vm), 0.0)), G, type, n - p)
 end
 
 """Group row indices by period value."""
