@@ -1,6 +1,11 @@
 [deps]
+CategoricalArrays = "324d7699-5711-5eae-9e2f-1d82baa6b597"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+MixedModels = "ff71e718-51f3-5ec2-a782-8ffcbfa3c316"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 SpatialHAC = "722b8b5f-3014-4c20-8332-0043c26f693c"
+StatsAPI = "82ae8749-77ed-4fe6-ae5f-f523153014b0"
 
 [compat]
 Documenter = "1"

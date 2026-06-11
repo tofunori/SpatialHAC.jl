@@ -9,7 +9,18 @@
 
 using Test
 using SpatialHAC
-using Aqua, JET
+using Aqua
+
+# JET tracks Julia's Compiler internals tightly and can fail to precompile on
+# Julia versions it does not support yet. Aqua remains a hard gate; JET is a
+# best-effort static-analysis gate that skips (loudly) when unavailable.
+const JET_AVAILABLE = try
+    @eval using JET
+    true
+catch err
+    @warn "JET unavailable on this Julia version; skipping static analysis" err
+    false
+end
 using SpatialHAC: haversine_km, euclidean_dist, scaled_re_matrix
 using MixedModels, DataFrames, StatsModels, CategoricalArrays
 using LinearAlgebra, SparseArrays, Statistics, Random
@@ -447,6 +458,8 @@ end
     Aqua.test_all(SpatialHAC)
 end
 
-@testset "JET static analysis" begin
-    JET.test_package(SpatialHAC; target_modules = (SpatialHAC,))
+if JET_AVAILABLE
+    @testset "JET static analysis" begin
+        JET.test_package(SpatialHAC; target_modules = (SpatialHAC,))
+    end
 end
