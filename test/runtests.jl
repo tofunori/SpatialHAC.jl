@@ -9,6 +9,7 @@
 
 using Test
 using SpatialHAC
+using Aqua, JET
 using SpatialHAC: haversine_km, euclidean_dist, scaled_re_matrix
 using MixedModels, DataFrames, StatsModels, CategoricalArrays
 using LinearAlgebra, SparseArrays, Statistics, Random
@@ -438,4 +439,14 @@ end
     @test_throws ArgumentError vcov_conley(m, lat[1:3], lon, yearv, [3.0])
     @test_throws ArgumentError vcov_conley(m, lat, lon, yearv, Float64[])
     @test_throws ArgumentError vcov_conley(m, lat, lon, yearv, [-1.0])
+end
+
+# ---- software quality gates ---------------------------------------------------
+
+@testset "Aqua.jl quality checks" begin
+    Aqua.test_all(SpatialHAC)
+end
+
+@testset "JET static analysis" begin
+    JET.test_package(SpatialHAC; target_modules = (SpatialHAC,))
 end

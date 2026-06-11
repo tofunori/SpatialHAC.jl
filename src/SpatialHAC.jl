@@ -144,7 +144,8 @@ function scaled_re_matrix(m)::SparseMatrixCSC{Float64,Int}
         push!(blocks, S == 1 ? Zi .* li[1, 1] :
                       Zi * kron(sparse(I, nlev, nlev), sparse(li)))
     end
-    return hcat(blocks...)
+    isempty(blocks) && return spzeros(Float64, size(m.X, 1), 0)
+    return reduce(hcat, blocks)
 end
 
 """
