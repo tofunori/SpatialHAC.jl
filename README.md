@@ -44,6 +44,10 @@ using MixedModels, SpatialHAC
 
 m = fit(MixedModel, @formula(y ~ 1 + x + (1|glacier) + (1|pixel) + (0+x|glacier)), df)
 
+# data-driven cutoff: covariogram-range selector (Lehner 2026, arXiv:2603.03997)
+sel = suggest_cutoff(m, df.latitude, df.longitude, df.year)
+@show sel.cutoff sel.crossed
+
 res = vcov_conley(m, df.latitude, df.longitude, df.year, [5.0, 15.0, 25.0, 50.0])
 
 for r in res
@@ -56,6 +60,13 @@ Each `ConleyResult` carries `cutoff`, `vcov`, `se`, `n_pairs`, `min_eig`,
 
 All cutoffs are computed in **one spatial sweep** at the largest cutoff
 (pair distances computed once), threaded over periods (`julia -t auto`).
+
+`suggest_cutoff` selects the bandwidth as the first zero crossing of the
+empirical covariogram of the marginal residuals (same-period pairs, seeded
+subsampling above 10k rows). Lehner (2026) shows SE magnitude is **inverse-U**
+in the bandwidth — neither tiny nor huge cutoffs are conservative — and that
+this selector controls test size where fixed bandwidths fail. Still report a
+sensitivity curve around the selected value.
 
 ## Safety
 
@@ -73,6 +84,8 @@ e.g. after an internal MixedModels change).
 | Degenerate cutoff → 0 | GLS-HC0 | ~1e-16 |
 | Cross-language | Independent R/lme4 reimplementation | 1.8e-14 (matched θ) |
 | Coverage Monte Carlo | Spatial GP errors, 300 reps | ≈90% vs 53% (Wald) |
+| Covariogram selector | Brute-force binned covariogram + selection rule | exact |
+| Range recovery | Spherical-GP field, known 25 km range | within [0.5, 1.6]×R |
 
 ## Caveats
 
@@ -93,6 +106,8 @@ e.g. after an internal MixedModels change).
   *J. Econometrics* 140, 131–154.
 - Cameron, A.C., & Miller, D.L. (2015). A practitioner's guide to
   cluster-robust inference. *J. Human Resources* 50, 317–372.
+- Lehner, A. (2026). Bandwidth selection for spatial HAC standard errors.
+  arXiv:2603.03997.
 
 ## License
 

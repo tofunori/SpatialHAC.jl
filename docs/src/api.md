@@ -4,6 +4,8 @@
 SpatialHAC
 vcov_conley
 ConleyResult
+suggest_cutoff
+CovariogramResult
 ```
 
 ## Internal helpers

@@ -87,12 +87,45 @@ spatial-grid candidate filter (the haversine distance decides membership), all
 cutoffs are accumulated in a single sweep at the largest cutoff, and periods
 are processed in parallel threads.
 
+## Data-driven cutoff selection
+
+[`suggest_cutoff`](@ref) implements the covariogram-range selector of Lehner
+(2026, arXiv:2603.03997): bin the products ``\hat e_i \hat e_j`` of
+same-period residual pairs by distance (default ~150 bins spanning two-thirds
+of the maximum inter-point distance), and select the first bin center at which
+the empirical covariogram
+
+```math
+\hat C(h) = \frac{1}{|N(h)|} \sum_{(i,j) \in N(h)} \hat e_i \hat e_j
+```
+
+crosses zero (Lehner's Eq. 5 with tolerance ``\eta = 0``). The selected range
+is used **directly** as the kernel cutoff — no kernel-dependent rescaling. In
+Lehner's Monte Carlo this selector controls the false-positive rate at or near
+the nominal level and outperforms every fixed-bandwidth alternative, with best
+size control under Bartlett and Epanechnikov kernels.
+
+Two adaptations relative to the paper (which is cross-sectional OLS): pairs
+are restricted to the same period — the same panel convention as
+[`vcov_conley`](@ref) — and the residuals are the mixed-model *marginal*
+residuals ``\hat e = y - X\hat\beta``, i.e. exactly the residuals that enter
+the spatial meat. Above `max_points` rows (default 10,000) the selector works
+on a seeded random subsample, since the covariogram is quadratic in pairs; the
+paper benchmarks ``n \approx 10^4`` without subsampling.
+
+The selector is validated in the test suite against an independent brute-force
+implementation of the binned covariogram and selection rule, and shown to
+recover a known spatial range on simulated spherical-covariance Gaussian
+fields.
+
 ## Practical guidance
 
-- **Choose cutoffs from the data**, e.g. the range of the residual
-  empirical variogram, and **report a sensitivity curve** over several
-  cutoffs. Note that the relationship between bandwidth and SE magnitude is
-  not monotone in general (Lehner, 2026, arXiv:2603.03997).
+- **Choose cutoffs from the data** with [`suggest_cutoff`](@ref), and
+  **report a sensitivity curve** over several cutoffs around the selected
+  value. Lehner (2026) shows the relationship between bandwidth and SE
+  magnitude is *inverse-U shaped*: both too-narrow and too-wide bandwidths
+  understate standard errors, so a deliberately huge cutoff is **not** a
+  conservative choice.
 - **Interpret as a lower bound**: correlation beyond the cutoff and across
   periods is not captured. Present these SEs alongside cluster-robust SEs at a
   level matched to your predictor's assignment scale (Moulton logic).

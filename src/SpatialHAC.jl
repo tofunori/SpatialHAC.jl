@@ -28,12 +28,12 @@ See `vcov_conley` for the main entry point.
 """
 module SpatialHAC
 
-using LinearAlgebra, SparseArrays, Statistics
+using LinearAlgebra, SparseArrays, Statistics, Random
 using MixedModels
 using MixedModels: varest
 using StatsAPI: coef, response, nobs
 
-export vcov_conley, ConleyResult
+export vcov_conley, ConleyResult, suggest_cutoff, CovariogramResult
 
 const EARTH_RADIUS_KM = 6371.0088
 
@@ -233,6 +233,135 @@ function _accumulate_pairs_multi!(meats::Vector{Matrix{Float64}},
         end
     end
     return nothing
+end
+
+"""
+    CovariogramResult
+
+Result of the residual-covariogram cutoff selector (`suggest_cutoff`):
+
+- `cutoff`: selected bandwidth ς̂ in km (`NaN` if the covariogram never
+  reached the tolerance band within the binned domain);
+- `bins`: distance-bin centers (km);
+- `C`: empirical covariogram `Ĉ(h_b)` per bin (`NaN` for empty bins);
+- `n_pairs`: number of same-period pairs per bin;
+- `n_used`: rows retained after subsampling;
+- `crossed`: whether a zero crossing / tolerance hit was found.
+"""
+struct CovariogramResult
+    cutoff::Float64
+    bins::Vector{Float64}
+    C::Vector{Float64}
+    n_pairs::Vector{Int}
+    n_used::Int
+    crossed::Bool
+end
+
+"""
+    suggest_cutoff(m::LinearMixedModel, lat, lon, period; kwargs...) -> CovariogramResult
+    suggest_cutoff(ehat::AbstractVector, lat, lon, period; kwargs...) -> CovariogramResult
+
+Data-driven Conley cutoff via the covariogram-range selector of Lehner (2026,
+arXiv:2603.03997): bin the products `êᵢ·êⱼ` of same-period residual pairs by
+great-circle distance, and select the first bin center at which the empirical
+covariogram `Ĉ(h)` crosses zero (tolerance `eta`, default 0). The selected
+range is used directly as the kernel cutoff — no kernel-dependent rescaling.
+
+For a fitted model the marginal residuals `ê = y − Xβ̂` are used — the same
+residuals that enter the `vcov_conley` meat.
+
+Keyword arguments (defaults follow the paper's recommendations):
+- `nbins = 150`: number of distance bins (paper: 100-200);
+- `max_frac = 2/3`: bins span `max_frac` × the maximum same-period
+  inter-point distance;
+- `eta = 0.0`: tolerance band; `0` selects the first sign change of `Ĉ`;
+- `max_points = 10_000`: rows are subsampled (without replacement, seeded
+  `rng`) above this size — the covariogram is O(n²) in pairs. This is our
+  adaptation for large panels; the paper benchmarks n ≈ 10⁴ without
+  subsampling;
+- `rng = Xoshiro(2026)`: RNG for the subsample (fixed seed → reproducible).
+
+Adaptations vs. the paper (which is cross-sectional OLS): pairs are
+restricted to the same `period` (the same convention as `vcov_conley`), and
+residuals are the mixed-model marginal residuals.
+
+Always inspect the returned covariogram and report a cutoff-sensitivity
+curve around ς̂: Lehner shows SE magnitude is inverse-U in the bandwidth, so
+neither tiny nor huge cutoffs are conservative.
+"""
+function suggest_cutoff(m::LinearMixedModel, lat::AbstractVector,
+                        lon::AbstractVector, period::AbstractVector; kwargs...)
+    ehat = response(m) .- m.X * coef(m)
+    return suggest_cutoff(ehat, lat, lon, period; kwargs...)
+end
+
+function suggest_cutoff(ehat::AbstractVector, lat::AbstractVector,
+                        lon::AbstractVector, period::AbstractVector;
+                        nbins::Int = 150, max_frac::Float64 = 2 / 3,
+                        eta::Float64 = 0.0, max_points::Int = 10_000,
+                        rng::AbstractRNG = Xoshiro(2026))
+    n = length(ehat)
+    length(lat) == n && length(lon) == n && length(period) == n ||
+        throw(ArgumentError("residual/coordinate/period vectors must have equal length"))
+    nbins >= 2 || throw(ArgumentError("nbins must be >= 2"))
+    0 < max_frac <= 1 || throw(ArgumentError("max_frac must be in (0, 1]"))
+    eta >= 0 || throw(ArgumentError("eta must be >= 0"))
+
+    e = Float64.(ehat); la = Float64.(lat); lo = Float64.(lon)
+    per = Int.(period)
+    use = n <= max_points ? collect(1:n) : sort!(randperm(rng, n)[1:max_points])
+
+    groups = _period_groups(per[use])
+    for g in groups                       # back to original row indices
+        @inbounds for k in eachindex(g)
+            g[k] = use[g[k]]
+        end
+    end
+
+    # pass 1: maximum same-period inter-point distance on the subsample
+    dmax = 0.0
+    for g in groups, ii in eachindex(g), jj in (ii + 1):length(g)
+        i = g[ii]; j = g[jj]
+        d = haversine_km(la[i], lo[i], la[j], lo[j])
+        d > dmax && (dmax = d)
+    end
+    dmax > 0 || throw(ArgumentError(
+        "no same-period pair with positive distance; cannot bin a covariogram"))
+
+    hmax = max_frac * dmax
+    width = hmax / nbins
+
+    # pass 2: bin the residual cross-products
+    sums = zeros(nbins)
+    counts = zeros(Int, nbins)
+    for g in groups, ii in eachindex(g), jj in (ii + 1):length(g)
+        i = g[ii]; j = g[jj]
+        d = haversine_km(la[i], lo[i], la[j], lo[j])
+        d >= hmax && continue
+        b = min(nbins, floor(Int, d / width) + 1)
+        sums[b] += e[i] * e[j]
+        counts[b] += 1
+    end
+
+    centers = [(b - 0.5) * width for b in 1:nbins]
+    C = [counts[b] > 0 ? sums[b] / counts[b] : NaN for b in 1:nbins]
+
+    # Lehner Eq. (5): ς̂ = min{ h_b : |Ĉ(h_b)| ≤ η }; with η = 0 this is the
+    # first sign change of Ĉ relative to its short-range sign.
+    cutoff = NaN
+    crossed = false
+    s0 = 0.0
+    for b in 1:nbins
+        counts[b] == 0 && continue
+        c = C[b]
+        if abs(c) <= eta || (s0 != 0.0 && sign(c) != s0) || (s0 == 0.0 && c <= 0)
+            cutoff = centers[b]
+            crossed = true
+            break
+        end
+        s0 == 0.0 && (s0 = sign(c))
+    end
+    return CovariogramResult(cutoff, centers, C, counts, length(use), crossed)
 end
 
 end # module

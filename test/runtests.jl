@@ -11,7 +11,7 @@ using Test
 using SpatialHAC
 using SpatialHAC: haversine_km, scaled_re_matrix
 using MixedModels, DataFrames, StatsModels, CategoricalArrays
-using LinearAlgebra, SparseArrays, Statistics
+using LinearAlgebra, SparseArrays, Statistics, Random
 using MixedModels: varest
 using StatsAPI: coef, response
 
@@ -122,6 +122,110 @@ end
     end
     @test res.n_pairs == nb
     @test nb > 100
+end
+
+# ---- covariogram cutoff selector (Lehner 2026) -------------------------------
+
+# independent brute-force reference: same definition, no shared code path
+function brute_covariogram(e, la, lo, per; nbins, max_frac)
+    n = length(e)
+    dmax = 0.0
+    for i in 1:n, j in (i+1):n
+        per[i] == per[j] || continue
+        dmax = max(dmax, haversine_km(la[i], lo[i], la[j], lo[j]))
+    end
+    hmax = max_frac * dmax
+    width = hmax / nbins
+    sums = zeros(nbins); cnt = zeros(Int, nbins)
+    for i in 1:n, j in (i+1):n
+        per[i] == per[j] || continue
+        d = haversine_km(la[i], lo[i], la[j], lo[j])
+        d >= hmax && continue
+        b = min(nbins, floor(Int, d / width) + 1)
+        sums[b] += e[i] * e[j]; cnt[b] += 1
+    end
+    C = [cnt[b] > 0 ? sums[b] / cnt[b] : NaN for b in 1:nbins]
+    centers = [(b - 0.5) * width for b in 1:nbins]
+    return centers, C, cnt
+end
+
+@testset "covariogram == brute-force reference (no subsample)" begin
+    rng = Xoshiro(7)
+    ns = 240
+    la2 = 51.0 .+ 0.4 .* rand(rng, ns)
+    lo2 = -117.0 .- 0.5 .* rand(rng, ns)
+    pe2 = [i <= ns ÷ 2 ? 2001 : 2002 for i in 1:ns]
+    e2 = randn(rng, ns)
+    res = suggest_cutoff(e2, la2, lo2, pe2; nbins = 40, max_points = 10_000)
+    centers, Cref, cntref = brute_covariogram(e2, la2, lo2, pe2;
+                                              nbins = 40, max_frac = 2 / 3)
+    @test res.bins ≈ centers
+    @test res.n_pairs == cntref
+    for b in 1:40
+        cntref[b] == 0 && continue
+        @test res.C[b] ≈ Cref[b] atol = 1e-12
+    end
+    # selection rule replicated independently: first sign change of C
+    s0 = 0.0; sel = NaN
+    for b in 1:40
+        cntref[b] == 0 && continue
+        c = Cref[b]
+        if (s0 != 0.0 && sign(c) != s0) || (s0 == 0.0 && c <= 0)
+            sel = centers[b]; break
+        end
+        s0 == 0.0 && (s0 = sign(c))
+    end
+    @test res.cutoff ≈ sel
+end
+
+@testset "recovers a known spatial range (spherical GP)" begin
+    rng = Xoshiro(11)
+    ng = 38                               # 38×38 grid ≈ 1444 points, one period
+    la3 = Float64[]; lo3 = Float64[]
+    for a in 1:ng, b in 1:ng
+        push!(la3, 51.0 + 0.018 * a)      # ~2 km spacing
+        push!(lo3, -117.0 - 0.029 * b)
+    end
+    np = length(la3)
+    R = 25.0                              # true range, km
+    # spherical covariance (PSD in R^3): exact zero beyond R
+    Sig = zeros(np, np)
+    for i in 1:np
+        Sig[i, i] = 1.0
+        for j in (i+1):np
+            d = haversine_km(la3[i], lo3[i], la3[j], lo3[j])
+            d >= R && continue
+            v = 1 - 1.5 * (d / R) + 0.5 * (d / R)^3
+            Sig[i, j] = v; Sig[j, i] = v
+        end
+    end
+    L = cholesky(Symmetric(Sig + 1e-8I)).L
+    e3 = L * randn(rng, np)
+    res = suggest_cutoff(e3, la3, lo3, fill(2001, np);
+                         nbins = 60, max_points = np)
+    @test res.crossed
+    @test 0.5R <= res.cutoff <= 1.6R
+    # independent noise → selector picks (near-)first bin, far below R
+    res0 = suggest_cutoff(randn(rng, np), la3, lo3, fill(2001, np);
+                          nbins = 60, max_points = np)
+    @test res0.crossed
+    @test res0.cutoff < 0.3R
+end
+
+@testset "model method, subsampling, validation" begin
+    resm = suggest_cutoff(m, lat, lon, yearv; nbins = 30)
+    rese = suggest_cutoff(ehat, lat, lon, yearv; nbins = 30)
+    @test resm.cutoff === rese.cutoff && resm.C ≈ rese.C    # marginal residuals
+    # subsampling: deterministic (seeded) and uses exactly max_points rows
+    r1 = suggest_cutoff(ehat, lat, lon, yearv; nbins = 20, max_points = 200)
+    r2 = suggest_cutoff(ehat, lat, lon, yearv; nbins = 20, max_points = 200)
+    @test r1.n_used == 200
+    @test isapprox(r1.C, r2.C; nans = true)
+    @test_throws ArgumentError suggest_cutoff(ehat[1:5], lat, lon, yearv)
+    @test_throws ArgumentError suggest_cutoff(ehat, lat, lon, yearv; nbins = 1)
+    @test_throws ArgumentError suggest_cutoff(ehat, lat, lon, yearv; eta = -0.1)
+    @test_throws ArgumentError suggest_cutoff([1.0, 1.0], [50.0, 50.0],
+                                              [-117.0, -117.0], [2001, 2002])
 end
 
 @testset "haversine + input validation" begin
