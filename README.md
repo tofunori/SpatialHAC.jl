@@ -62,6 +62,8 @@ m = fit(MixedModel, @formula(y ~ 1 + x + (1|glacier) + (1|pixel) + (0+x|glacier)
 sel = suggest_cutoff(m, df.latitude, df.longitude, df.year)
 @show sel.cutoff sel.crossed
 
+# kernel = :bartlett (default) / :bartlett2 / :uniform / :epanechnikov
+# distance = :haversine (default, lat/lon°, cutoff km) / :euclidean (projected)
 res = vcov_conley(m, df.latitude, df.longitude, df.year, [5.0, 15.0, 25.0, 50.0])
 
 for r in res
@@ -122,6 +124,7 @@ e.g. after an internal MixedModels change).
 | Weighted models | Dense weighted Liang-Zeger sandwich | ~1e-14 |
 | Kernels (bartlett/bartlett2/uniform/epanechnikov) | Dense definitional sandwich | ~1e-15 |
 | K₂ PSD in 2-D / uniform not | Kernel Gram eigenvalues (Schoenberg P₂) | exact |
+| Euclidean distance | Dense planar sandwich | ~1e-15 |
 
 ## Caveats
 

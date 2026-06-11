@@ -46,7 +46,8 @@ const EARTH_RADIUS_KM = 6371.0088
 
 Result for one cutoff: fields `cutoff` (km), `vcov` (p×p), `se` (Vector),
 `coef` (point estimates), `names` (coefficient names), `n_pairs`,
-`min_eig` (smallest pre-floor eigenvalue), `floored::Bool`, `kernel::Symbol`.
+`min_eig` (smallest pre-floor eigenvalue), `floored::Bool`, `kernel::Symbol`,
+`distance::Symbol`.
 
 Implements the `StatsAPI` accessors `vcov`, `stderror`, `coefnames` and
 `coeftable`; `show` prints a coefficient table.
@@ -61,6 +62,7 @@ struct ConleyResult
     min_eig::Float64
     floored::Bool
     kernel::Symbol
+    distance::Symbol
 end
 
 """
@@ -112,6 +114,10 @@ function haversine_km(lat1::Float64, lon1::Float64, lat2::Float64, lon2::Float64
     a = sin(dphi / 2)^2 + cos(phi1) * cos(phi2) * sin(dlmb / 2)^2
     return 2 * EARTH_RADIUS_KM * asin(min(1.0, sqrt(a)))
 end
+
+"""Planar Euclidean distance (coordinates in the same unit as the cutoff)."""
+euclidean_dist(x1::Float64, y1::Float64, x2::Float64, y2::Float64)::Float64 =
+    hypot(x1 - x2, y1 - y2)
 
 """
     scaled_re_matrix(m::LinearMixedModel) -> SparseMatrixCSC
@@ -182,9 +188,13 @@ Arguments:
 - `lat`, `lon`: per-row coordinates in degrees, in the model's row order.
 - `period`: per-row integer period (e.g. year); pairs are restricted to the
   same period (panel spatial-HAC convention).
-- `cutoffs`: one or more cutoff distances in km.
+- `cutoffs`: one or more cutoff distances, in km for `:haversine` or in the
+  coordinate unit for `:euclidean`.
 - `kernel`: `:bartlett` (`1−u`, default), `:bartlett2` (`(1−u)²`), `:uniform`
   (`1`) or `:epanechnikov` (`1−u²`), with `u = d/cutoff`.
+- `distance`: `:haversine` (default; `lat`/`lon` in degrees, cutoff in km) or
+  `:euclidean` (planar `x`/`y` in the same unit as the cutoff, e.g. projected
+  metres/km). Use `:euclidean` when coordinates are already projected.
 
 **Positive semi-definiteness.** The estimator is PSD-admissible only when the
 kernel's Gram matrix is PSD for the coordinate dimension (Schoenberg class
@@ -205,10 +215,14 @@ antimeridian-aware (pairs straddling ±180° longitude would be missed).
 """
 function vcov_conley(m, lat::AbstractVector, lon::AbstractVector,
                      period::AbstractVector, cutoffs::AbstractVector{<:Real};
-                     kernel::Symbol = :bartlett, check_tol::Float64 = 1e-6)
+                     kernel::Symbol = :bartlett, distance::Symbol = :haversine,
+                     check_tol::Float64 = 1e-6)
     isempty(cutoffs) && throw(ArgumentError("no cutoffs given"))
-    any(c -> c <= 0, cutoffs) && throw(ArgumentError("cutoffs must be > 0 km"))
+    any(c -> c <= 0, cutoffs) && throw(ArgumentError("cutoffs must be > 0"))
     kfun = _kernel_fun(kernel)                    # also validates the kernel name
+    distance in (:haversine, :euclidean) ||
+        throw(ArgumentError("distance must be :haversine or :euclidean"))
+    distfun = distance === :haversine ? haversine_km : euclidean_dist
     bread, S, n, p = _gls_bread_scores(m; check_tol = check_tol)
     lat = Float64.(lat); lon = Float64.(lon); period = Int.(period)
     length(lat) == n && length(lon) == n && length(period) == n ||
@@ -222,7 +236,7 @@ function vcov_conley(m, lat::AbstractVector, lon::AbstractVector,
     group_counts = [zeros(Int, nc) for _ in groups]
     Threads.@threads for gi in eachindex(groups)
         _accumulate_pairs_multi!(group_meats[gi], group_counts[gi],
-                                 S, lat, lon, groups[gi], cuts, kfun)
+                                 S, lat, lon, groups[gi], cuts, kfun, distance, distfun)
     end
 
     diag_meat = S' * S
@@ -251,7 +265,7 @@ function vcov_conley(m, lat::AbstractVector, lon::AbstractVector,
         end
         Vm = Matrix(V)
         push!(results, ConleyResult(cutoff, Vm, sqrt.(max.(diag(Vm), 0.0)),
-                                    cf, nm, n_pairs, min_eig, floored, kernel))
+                                    cf, nm, n_pairs, min_eig, floored, kernel, distance))
     end
     return results
 end
@@ -341,8 +355,10 @@ function StatsAPI.coeftable(r::_RobustResult; level::Real = 0.95)
 end
 
 function Base.show(io::IO, mime::MIME"text/plain", r::ConleyResult)
-    println(io, "ConleyResult (spatial-HAC, kernel = :$(r.kernel), ",
-            "cutoff = $(r.cutoff) km, n_pairs = $(r.n_pairs)",
+    unit = r.distance === :haversine ? " km" : ""
+    dist = r.distance === :haversine ? "" : ", distance = :$(r.distance)"
+    println(io, "ConleyResult (spatial-HAC, kernel = :$(r.kernel)$(dist), ",
+            "cutoff = $(r.cutoff)$(unit), n_pairs = $(r.n_pairs)",
             r.floored ? ", PSD-floored" : "", ")")
     show(io, mime, coeftable(r))
 end
@@ -362,23 +378,30 @@ function _period_groups(period::Vector{Int})::Vector{Vector{Int}}
 end
 
 """
-Accumulate Bartlett-weighted cross products for all unordered same-period pairs
+Accumulate kernel-weighted cross products for all unordered same-period pairs
 within each cutoff in `cuts` (sorted), in one sweep at the largest cutoff. The
-lat/lon grid only proposes candidates; the haversine distance decides.
+coordinate grid only proposes candidates; `distfun` decides the distance. Cell
+sizes are set so that every within-cutoff pair lands in an adjacent cell: from
+degrees-to-km for `:haversine`, or directly in coordinate units for
+`:euclidean`.
 """
 function _accumulate_pairs_multi!(meats::Vector{Matrix{Float64}},
                                   counts::Vector{Int}, S::Matrix{Float64},
                                   lat::Vector{Float64}, lon::Vector{Float64},
                                   idx::Vector{Int}, cuts::Vector{Float64},
-                                  kfun::F) where {F}
+                                  kfun::F, mode::Symbol, distfun::F2) where {F,F2}
     isempty(idx) && return nothing
     p = size(S, 2)
     nc = length(cuts)
     cmax = cuts[end]
-    dlat = cmax / 110.574
-    maxabslat = maximum(abs.(@view lat[idx]))
-    coslat = max(cosd(min(maxabslat, 89.0)), 1e-3)
-    dlon = cmax / (111.320 * coslat)
+    if mode === :haversine
+        dlat = cmax / 110.574
+        maxabslat = maximum(abs.(@view lat[idx]))
+        coslat = max(cosd(min(maxabslat, 89.0)), 1e-3)
+        dlon = cmax / (111.320 * coslat)
+    else                                    # :euclidean — coords in cutoff units
+        dlat = cmax; dlon = cmax
+    end
 
     grid = Dict{Tuple{Int,Int},Vector{Int}}()
     for i in idx
@@ -397,7 +420,7 @@ function _accumulate_pairs_multi!(meats::Vector{Matrix{Float64}},
             cell === nothing && continue
             for j in cell
                 j <= i && continue
-                d = haversine_km(lat[i], lon[i], lat[j], lon[j])
+                d = distfun(lat[i], lon[i], lat[j], lon[j])
                 d >= cmax && continue
                 for ck in 1:nc
                     c = cuts[ck]

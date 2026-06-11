@@ -9,7 +9,7 @@
 
 using Test
 using SpatialHAC
-using SpatialHAC: haversine_km, scaled_re_matrix
+using SpatialHAC: haversine_km, euclidean_dist, scaled_re_matrix
 using MixedModels, DataFrames, StatsModels, CategoricalArrays
 using LinearAlgebra, SparseArrays, Statistics, Random
 using MixedModels: varest
@@ -52,7 +52,8 @@ function dense_cluster(X, ehat, Wmat, cl, typ)
 end
 
 # dense definitional Liang-Zeger sandwich (ground truth; no shared internals)
-function dense_sandwich(X, ehat, Wmat, lat, lon, yearv, cutoff; kfun = u -> 1.0 - u)
+function dense_sandwich(X, ehat, Wmat, lat, lon, yearv, cutoff;
+                        kfun = u -> 1.0 - u, dist = haversine_km)
     n, p = size(X)
     Omega = Matrix(1.0I, n, n) + Matrix(Wmat * Wmat')
     Ad = Omega \ X
@@ -62,7 +63,7 @@ function dense_sandwich(X, ehat, Wmat, lat, lon, yearv, cutoff; kfun = u -> 1.0 
         Sig[i, i] = ehat[i]^2
         for j in (i+1):n
             yearv[i] == yearv[j] || continue
-            d = haversine_km(lat[i], lon[i], lat[j], lon[j])
+            d = dist(lat[i], lon[i], lat[j], lon[j])
             d >= cutoff && continue
             w = kfun(d / cutoff) * ehat[i] * ehat[j]
             Sig[i, j] = w; Sig[j, i] = w
@@ -227,6 +228,16 @@ end
     K2 = [(d = hypot(P[i][1] - P[j][1], P[i][2] - P[j][2]); d < cc ? (1 - d / cc)^2 : 0.0)
           for i in 1:60, j in 1:60]
     @test minimum(eigen(Symmetric(K2)).values) > -1e-8                  # K₂ PSD
+end
+
+@testset "euclidean distance == dense euclidean sandwich" begin
+    # treat lat/lon as planar x/y; pick a cutoff in the same (degree-like) unit
+    cE = 0.30
+    res = vcov_conley(m, lat, lon, yearv, [cE]; distance = :euclidean)[1]
+    Vdef = dense_sandwich(X, ehat, W, lat, lon, yearv, cE; dist = euclidean_dist)
+    @test maximum(abs.(res.vcov .- Vdef)) / maximum(abs.(Vdef)) < 1e-9
+    @test res.distance === :euclidean
+    @test_throws ArgumentError vcov_conley(m, lat, lon, yearv, [cE]; distance = :geodesic)
 end
 
 @testset "OLS limit == textbook Conley (formula anchor)" begin
