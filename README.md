@@ -144,6 +144,7 @@ e.g. after an internal MixedModels change).
 | Euclidean distance | Dense planar sandwich | ~1e-15 |
 | Covariogram / variogram | Independent brute-force binning | ~1e-12 |
 | Semivariogram identity | `γ = m₂ − Ĉ` per bin (exact) | ~1e-12 |
+| Variogram cross-package | `GeoStatsFunctions.EmpiricalVariogram` (Matheron) | 6e-16 |
 
 ## Caveats
 
